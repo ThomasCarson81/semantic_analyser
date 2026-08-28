@@ -86,13 +86,31 @@ fn main() {
     match resolve_names(&program, &mut environment) {
         Ok(_) => {}
         Err(e) => match e {
-            AnalysisError::OutOfScopes => todo!(),
-            AnalysisError::VariableAlreadyDeclared(_) => todo!(),
-            AnalysisError::FunctionAlreadyDefined(_) => todo!(),
-            AnalysisError::UndeclaredVariable(_) => todo!(),
-            AnalysisError::CouldNotReadFile(_) => todo!(),
-            AnalysisError::FunctionNotDefined(_) => todo!(),
-            AnalysisError::FunctionArgumentCountMismatch(_, _, _) => todo!(),
+            AnalysisError::CouldNotReadFile(msg) => {
+                println!("Semantic Analyser failed to read AST file. {msg}");
+            }
+            AnalysisError::OutOfScopes => {
+                println!("Semantic Analyser popped too many scopes and ran out.")
+            }
+            AnalysisError::VariableAlreadyDeclared(name) => {
+                println!("Variable '{name}' already declared in this scope.");
+            }
+            AnalysisError::UndeclaredVariable(name) => {
+                println!("Variable '{name}' does not exist.");
+            }
+            AnalysisError::FunctionAlreadyDefined(name) => {
+                println!(
+                    "Function '{name}' already defined. Overrides are not currently supported."
+                );
+            }
+            AnalysisError::FunctionNotDefined(name) => {
+                println!("Function '{name}' does not exist.");
+            }
+            AnalysisError::FunctionArgumentCountMismatch(name, expected, found) => {
+                println!(
+                    "Function '{name}' expects {expected} arguments, but {found} were provided."
+                );
+            }
         },
     }
 }
