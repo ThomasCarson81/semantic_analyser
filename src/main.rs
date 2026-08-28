@@ -83,6 +83,21 @@ fn main() {
         }
     };
     let mut environment = SemanticEnvironment::new();
+
+    match collect_functions(&program, &mut environment) {
+        Ok(_) => {}
+        Err(e) => match e {
+            AnalysisError::FunctionAlreadyDefined(name) => {
+                println!(
+                    "Function '{name}' already defined. Overrides are not currently supported."
+                );
+            }
+            _ => unreachable!(
+                "Semantic Analyser encountered an unexpected error when collecting functions."
+            ),
+        },
+    }
+
     match resolve_names(&program, &mut environment) {
         Ok(_) => {}
         Err(e) => match e {
@@ -121,6 +136,31 @@ fn get_ast_from_file(file_path: &str) -> Result<Program, AnalysisError> {
     let program: Program =
         serde_json::from_str(&ast).map_err(|e| AnalysisError::CouldNotReadFile(e.to_string()))?;
     Ok(program)
+}
+
+fn collect_functions(
+    program: &Program,
+    environment: &mut SemanticEnvironment,
+) -> Result<(), AnalysisError> {
+    for statement in &program.statements {
+        match statement {
+            Statement::FunctionDefinition {
+                identifier,
+                parameters,
+                body: _,
+            } => {
+                let func_symbol = FunctionSymbol {
+                    parameters: parameters.clone(),
+                };
+                environment.define_func(identifier.clone(), func_symbol)?;
+            }
+            _ => {
+                // TODO: disallow top level statements
+                // return Err(...)
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_names(
@@ -193,14 +233,10 @@ fn resolve_statement(
             resolve_block(body, environment)?;
         }
         Statement::FunctionDefinition {
-            identifier,
-            parameters,
+            identifier: _,
+            parameters: _,
             body,
         } => {
-            let func_symbol = FunctionSymbol {
-                parameters: parameters.clone(),
-            };
-            environment.define_func(identifier.clone(), func_symbol)?;
             resolve_block(body, environment)?;
         }
         Statement::ExpressionStatement { expression } => {
@@ -264,6 +300,7 @@ fn resolve_expression(
 
     Ok(())
 }
+
 fn resolve_block(
     block: &Vec<Statement>,
     environment: &mut SemanticEnvironment,
