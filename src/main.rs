@@ -1,5 +1,8 @@
-use std::{collections::HashMap, env};
-use syntax::{Expression, Program, Statement, Value};
+use std::{
+    collections::{HashMap, HashSet},
+    env,
+};
+use syntax::{Expression, Program, Statement, Type};
 
 enum AnalysisError {
     OutOfScopes,
@@ -12,37 +15,36 @@ enum AnalysisError {
 }
 
 struct SemanticEnvironment {
-    scopes: Vec<HashMap<String, Symbol>>,
+    scopes: Vec<HashSet<String>>,
     functions: HashMap<String, FunctionSymbol>,
 }
 impl SemanticEnvironment {
     fn new() -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![HashSet::new()],
             functions: HashMap::new(),
         }
     }
+
     fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(HashSet::new());
     }
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
     }
 
-    fn define(&mut self, name: String, symbol: Symbol) -> Result<(), AnalysisError> {
+    fn define(&mut self, name: String) -> Result<(), AnalysisError> {
         let scope = self.scopes.last_mut().ok_or(AnalysisError::OutOfScopes)?;
 
-        if scope.contains_key(&name) {
-            return Err(AnalysisError::VariableAlreadyDeclared(name.clone()));
+        if !scope.insert(name.clone()) {
+            return Err(AnalysisError::VariableAlreadyDeclared(name));
         }
-
-        scope.insert(name, symbol);
         Ok(())
     }
 
-    fn get(&self, name: &str) -> Option<&Symbol> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
+    fn get(&self, name: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
     }
 
     fn define_func(&mut self, name: String, symbol: FunctionSymbol) -> Result<(), AnalysisError> {
@@ -52,14 +54,12 @@ impl SemanticEnvironment {
         self.functions.insert(name, symbol);
         Ok(())
     }
+
     fn get_func(&self, name: &String) -> Result<&FunctionSymbol, AnalysisError> {
         self.functions
             .get(name)
             .ok_or(AnalysisError::FunctionNotDefined(name.clone()))
     }
-}
-struct Symbol {
-    mutable: bool,
 }
 struct FunctionSymbol {
     parameters: Vec<String>,
@@ -183,17 +183,16 @@ fn resolve_statement(
             expression,
         } => {
             resolve_expression(&expression, environment)?;
-            let symbol = Symbol { mutable: true }; // currently all variables are mutable - let statements will have mutable field later.
-            environment.define(identifier.clone(), symbol)?;
+            environment.define(identifier.clone())?;
         }
         Statement::Assignment {
             identifier,
             expression,
         } => {
             resolve_expression(expression, environment)?;
-            environment
-                .get(identifier)
-                .ok_or(AnalysisError::UndeclaredVariable(identifier.clone()))?;
+            if !environment.get(identifier) {
+                return Err(AnalysisError::UndeclaredVariable(identifier.clone()));
+            }
         }
         Statement::If {
             condition,
@@ -259,9 +258,9 @@ fn resolve_expression(
     match expression {
         Expression::Literal(_) => {}
         Expression::Identifier(identifier) => {
-            environment
-                .get(identifier)
-                .ok_or(AnalysisError::UndeclaredVariable(identifier.clone()))?;
+            if !environment.get(identifier) {
+                return Err(AnalysisError::UndeclaredVariable(identifier.clone()));
+            }
         }
         Expression::BinaryOp {
             left,
@@ -310,5 +309,60 @@ fn resolve_block(
         resolve_statement(statement, environment)?;
     }
     environment.pop_scope();
+    Ok(())
+}
+
+fn check_types(program: &Program, environment: &SemanticEnvironment) -> Result<(), AnalysisError> {
+    for statement in &program.statements {
+        check_statement_types(statement, environment)?;
+    }
+    Ok(())
+}
+
+fn check_statement_types(
+    statement: &Statement,
+    environment: &SemanticEnvironment,
+) -> Result<(), AnalysisError> {
+    match statement {
+        Statement::Let {
+            identifier,
+            expression,
+        } => todo!(),
+        Statement::Assignment {
+            identifier,
+            expression,
+        } => todo!(),
+        Statement::If {
+            condition,
+            body,
+            else_block,
+        } => todo!(),
+        Statement::While { condition, body } => todo!(),
+        Statement::For {
+            initialiser,
+            condition,
+            increment,
+            body,
+        } => todo!(),
+        Statement::Scope { body } => todo!(),
+        Statement::FunctionDefinition {
+            identifier,
+            parameters,
+            body,
+        } => todo!(),
+        Statement::ExpressionStatement { expression } => todo!(),
+        Statement::Return { value } => todo!(),
+        Statement::Break => todo!(),
+        Statement::Continue => todo!(),
+        Statement::Pass => todo!(),
+    }
+
+    Ok(())
+}
+
+fn check_expression_types(
+    statement: &Statement,
+    environment: &SemanticEnvironment,
+) -> Result<(), AnalysisError> {
     Ok(())
 }
