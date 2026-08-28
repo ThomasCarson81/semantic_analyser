@@ -4,8 +4,10 @@ use syntax::{Expression, Program, Statement, Value};
 enum AnalysisError {
     OutOfScopes,
     VariableAlreadyDeclared(String),
-    FunctionAlreadyDefined(String),
     UndeclaredVariable(String),
+    FunctionAlreadyDefined(String),
+    FunctionNotDefined(String),
+    FunctionArgumentCountMismatch(String, usize, usize),
     CouldNotReadFile(String),
 }
 
@@ -50,6 +52,11 @@ impl SemanticEnvironment {
         self.functions.insert(name, symbol);
         Ok(())
     }
+    fn get_func(&self, name: &String) -> Result<&FunctionSymbol, AnalysisError> {
+        self.functions
+            .get(name)
+            .ok_or(AnalysisError::FunctionNotDefined(name.clone()))
+    }
 }
 struct Symbol {
     mutable: bool,
@@ -84,6 +91,8 @@ fn main() {
             AnalysisError::FunctionAlreadyDefined(_) => todo!(),
             AnalysisError::UndeclaredVariable(_) => todo!(),
             AnalysisError::CouldNotReadFile(_) => todo!(),
+            AnalysisError::FunctionNotDefined(_) => todo!(),
+            AnalysisError::FunctionArgumentCountMismatch(_, _, _) => todo!(),
         },
     }
 }
@@ -180,7 +189,6 @@ fn resolve_statement(
             resolve_expression(expression, environment)?;
         }
         Statement::Return { value } => {
-            // TODO: validate that return is only used inside a function
             if let Some(expression) = value {
                 resolve_expression(expression, environment)?;
             }
@@ -192,13 +200,60 @@ fn resolve_statement(
 
 fn resolve_expression(
     expression: &Expression,
-    environment: &mut SemanticEnvironment,
-) -> Result<Value, AnalysisError> {
-    todo!()
+    environment: &SemanticEnvironment,
+) -> Result<(), AnalysisError> {
+    match expression {
+        Expression::Literal(_) => {}
+        Expression::Identifier(identifier) => {
+            environment
+                .get(identifier)
+                .ok_or(AnalysisError::UndeclaredVariable(identifier.clone()))?;
+        }
+        Expression::BinaryOp {
+            left,
+            operator: _,
+            right,
+        } => {
+            resolve_expression(left, environment)?;
+            resolve_expression(right, environment)?;
+        }
+        Expression::UnaryOp {
+            operator: _,
+            operand,
+        } => {
+            resolve_expression(operand, environment)?;
+        }
+        Expression::FunctionCall {
+            identifier,
+            arguments,
+        } => {
+            let func = environment.get_func(identifier)?;
+
+            for argument in arguments {
+                resolve_expression(argument, environment)?;
+            }
+            let num_args = arguments.len();
+            let num_params = func.parameters.len();
+            if num_args != num_params {
+                return Err(AnalysisError::FunctionArgumentCountMismatch(
+                    identifier.clone(),
+                    num_params,
+                    num_args,
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 fn resolve_block(
     block: &Vec<Statement>,
     environment: &mut SemanticEnvironment,
 ) -> Result<(), AnalysisError> {
-    todo!()
+    environment.push_scope();
+    for statement in block {
+        resolve_statement(statement, environment)?;
+    }
+    environment.pop_scope();
+    Ok(())
 }
