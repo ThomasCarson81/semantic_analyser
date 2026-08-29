@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
 };
-use syntax::{Expression, Program, Statement, Type};
+use syntax::{Expression, FunctionSymbol, Program, Statement, Symbol, Type};
 
 enum AnalysisError {
     OutOfScopes,
@@ -11,17 +11,21 @@ enum AnalysisError {
     FunctionAlreadyDefined(String),
     FunctionNotDefined(String),
     FunctionArgumentCountMismatch(String, usize, usize),
+    TypeMismatch(Type, Type),
+    CannotMutate(String),
     CouldNotReadFile(String),
 }
 
 struct SemanticEnvironment {
     scopes: Vec<HashSet<String>>,
+    scopes_typed: Vec<HashMap<String, Symbol>>,
     functions: HashMap<String, FunctionSymbol>,
 }
 impl SemanticEnvironment {
     fn new() -> Self {
         Self {
             scopes: vec![HashSet::new()],
+            scopes_typed: vec![HashMap::new()],
             functions: HashMap::new(),
         }
     }
@@ -30,8 +34,16 @@ impl SemanticEnvironment {
         self.scopes.push(HashSet::new());
     }
 
+    fn push_scope_typed(&mut self) {
+        self.scopes_typed.push(HashMap::new());
+    }
+
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    fn pop_scope_typed(&mut self) {
+        self.scopes_typed.pop();
     }
 
     fn define(&mut self, name: String) -> Result<(), AnalysisError> {
@@ -43,8 +55,29 @@ impl SemanticEnvironment {
         Ok(())
     }
 
+    fn define_typed(&mut self, name: String, symbol: Symbol) -> Result<(), AnalysisError> {
+        let scope = self
+            .scopes_typed
+            .last_mut()
+            .ok_or(AnalysisError::OutOfScopes)?;
+
+        if scope.contains_key(&name) {
+            return Err(AnalysisError::VariableAlreadyDeclared(name));
+        }
+
+        scope.insert(name.clone(), symbol);
+        Ok(())
+    }
+
     fn get(&self, name: &str) -> bool {
         self.scopes.iter().rev().any(|scope| scope.contains(name))
+    }
+
+    fn get_typed(&self, name: &str) -> Option<&Symbol> {
+        self.scopes_typed
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name))
     }
 
     fn define_func(&mut self, name: String, symbol: FunctionSymbol) -> Result<(), AnalysisError> {
@@ -61,9 +94,7 @@ impl SemanticEnvironment {
             .ok_or(AnalysisError::FunctionNotDefined(name.clone()))
     }
 }
-struct FunctionSymbol {
-    parameters: Vec<String>,
-}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
@@ -86,48 +117,91 @@ fn main() {
 
     match collect_functions(&program, &mut environment) {
         Ok(_) => {}
-        Err(e) => match e {
-            AnalysisError::FunctionAlreadyDefined(name) => {
-                println!(
-                    "Function '{name}' already defined. Overrides are not currently supported."
-                );
+        Err(e) => {
+            match e {
+                AnalysisError::FunctionAlreadyDefined(name) => {
+                    println!(
+                        "Function '{name}' already defined. Overrides are not currently supported."
+                    );
+                }
+                _ => unreachable!(
+                    "Semantic Analyser encountered an unexpected error when collecting functions."
+                ),
             }
-            _ => unreachable!(
-                "Semantic Analyser encountered an unexpected error when collecting functions."
-            ),
-        },
+            std::process::exit(1);
+        }
     }
 
     match resolve_names(&program, &mut environment) {
         Ok(_) => {}
-        Err(e) => match e {
-            AnalysisError::CouldNotReadFile(msg) => {
-                println!("Semantic Analyser failed to read AST file. {msg}");
+        Err(e) => {
+            match e {
+                AnalysisError::CouldNotReadFile(msg) => {
+                    println!("Semantic Analyser failed to read AST file. {msg}");
+                }
+                AnalysisError::OutOfScopes => {
+                    println!("Semantic Analyser popped too many scopes and ran out.")
+                }
+                AnalysisError::VariableAlreadyDeclared(name) => {
+                    println!("Variable '{name}' already declared in this scope.");
+                }
+                AnalysisError::UndeclaredVariable(name) => {
+                    println!("Variable '{name}' does not exist.");
+                }
+                AnalysisError::FunctionAlreadyDefined(name) => {
+                    println!(
+                        "Function '{name}' already defined. Overrides are not currently supported."
+                    );
+                }
+                AnalysisError::FunctionNotDefined(name) => {
+                    println!("Function '{name}' does not exist.");
+                }
+                AnalysisError::FunctionArgumentCountMismatch(name, expected, found) => {
+                    println!(
+                        "Function '{name}' expects {expected} arguments, but {found} were provided."
+                    );
+                }
+                _ => unreachable!(
+                    "Semantic Analyser encountered an unexpected error when resolving names."
+                ),
             }
-            AnalysisError::OutOfScopes => {
-                println!("Semantic Analyser popped too many scopes and ran out.")
-            }
-            AnalysisError::VariableAlreadyDeclared(name) => {
-                println!("Variable '{name}' already declared in this scope.");
-            }
-            AnalysisError::UndeclaredVariable(name) => {
-                println!("Variable '{name}' does not exist.");
-            }
-            AnalysisError::FunctionAlreadyDefined(name) => {
-                println!(
-                    "Function '{name}' already defined. Overrides are not currently supported."
-                );
-            }
-            AnalysisError::FunctionNotDefined(name) => {
-                println!("Function '{name}' does not exist.");
-            }
-            AnalysisError::FunctionArgumentCountMismatch(name, expected, found) => {
-                println!(
-                    "Function '{name}' expects {expected} arguments, but {found} were provided."
-                );
-            }
-        },
+            std::process::exit(1);
+        }
     }
+
+    // clear name resolution data
+    environment.scopes.clear();
+    environment.push_scope();
+    match check_types(&program, &mut environment) {
+        Ok(_) => {}
+        Err(e) => {
+            match e {
+                AnalysisError::TypeMismatch(expected, found) => {
+                    println!("Type mismatch: expected '{expected}', found '{found}'.")
+                }
+                AnalysisError::CannotMutate(name) => {
+                    println!(
+                        "Cannot mutate immutable variable '{name}'. Consider adding 'mut' to the declaration. (let mut {name} = ...;)"
+                    )
+                }
+                AnalysisError::OutOfScopes
+                | AnalysisError::FunctionAlreadyDefined(_)
+                | AnalysisError::FunctionNotDefined(_)
+                | AnalysisError::FunctionArgumentCountMismatch(_, _, _)
+                | AnalysisError::VariableAlreadyDeclared(_)
+                | AnalysisError::UndeclaredVariable(_)
+                | AnalysisError::CouldNotReadFile(_) => unreachable!(
+                    "Semantic Analyser encountered an unexpected error when checking types."
+                ),
+            }
+            std::process::exit(1);
+        }
+    }
+
+    // context check for control flow
+
+    // output checked ast? perhaps not necessary
+    // output function table??
 }
 
 fn get_ast_from_file(file_path: &str) -> Result<Program, AnalysisError> {
@@ -148,9 +222,11 @@ fn collect_functions(
                 identifier,
                 parameters,
                 body: _,
+                return_type,
             } => {
                 let func_symbol = FunctionSymbol {
                     parameters: parameters.clone(),
+                    return_type: *return_type,
                 };
                 environment.define_func(identifier.clone(), func_symbol)?;
             }
@@ -181,6 +257,8 @@ fn resolve_statement(
         Statement::Let {
             identifier,
             expression,
+            mutable: _,
+            var_type: _,
         } => {
             resolve_expression(&expression, environment)?;
             environment.define(identifier.clone())?;
@@ -235,6 +313,7 @@ fn resolve_statement(
             identifier: _,
             parameters: _,
             body,
+            return_type: _,
         } => {
             resolve_block(body, environment)?;
         }
@@ -312,7 +391,10 @@ fn resolve_block(
     Ok(())
 }
 
-fn check_types(program: &Program, environment: &SemanticEnvironment) -> Result<(), AnalysisError> {
+fn check_types(
+    program: &Program,
+    environment: &mut SemanticEnvironment,
+) -> Result<(), AnalysisError> {
     for statement in &program.statements {
         check_statement_types(statement, environment)?;
     }
@@ -321,48 +403,121 @@ fn check_types(program: &Program, environment: &SemanticEnvironment) -> Result<(
 
 fn check_statement_types(
     statement: &Statement,
-    environment: &SemanticEnvironment,
+    environment: &mut SemanticEnvironment,
 ) -> Result<(), AnalysisError> {
     match statement {
         Statement::Let {
             identifier,
             expression,
-        } => todo!(),
+            mutable,
+            var_type,
+        } => {
+            let expr_type = check_expression_types(expression, environment)?;
+            if let Some(annotation) = var_type {
+                if *annotation != expr_type {
+                    return Err(AnalysisError::TypeMismatch(*annotation, expr_type));
+                }
+            }
+            let symbol = Symbol {
+                mutable: *mutable,
+                var_type: expr_type,
+            };
+            environment.define_typed(identifier.clone(), symbol)?;
+        }
         Statement::Assignment {
             identifier,
             expression,
-        } => todo!(),
+        } => {
+            let stored_var = environment
+                .get_typed(identifier)
+                .ok_or(AnalysisError::UndeclaredVariable(identifier.clone()))?;
+            if !stored_var.mutable {
+                return Err(AnalysisError::CannotMutate(identifier.clone()));
+            }
+            let expr_type = check_expression_types(expression, environment)?;
+            if stored_var.var_type != expr_type {
+                return Err(AnalysisError::TypeMismatch(stored_var.var_type, expr_type));
+            }
+        }
         Statement::If {
             condition,
             body,
             else_block,
-        } => todo!(),
-        Statement::While { condition, body } => todo!(),
+        } => {
+            let condition_type = check_expression_types(condition, environment)?;
+            if condition_type != Type::Bool {
+                return Err(AnalysisError::TypeMismatch(Type::Bool, condition_type));
+            }
+            check_block_types(body, environment)?;
+            if let Some(else_block) = else_block {
+                check_block_types(else_block, environment)?;
+            }
+        }
+        Statement::While { condition, body } => {
+            let condition_type = check_expression_types(condition, environment)?;
+            if condition_type != Type::Bool {
+                return Err(AnalysisError::TypeMismatch(Type::Bool, condition_type));
+            }
+            check_block_types(body, environment)?;
+        }
         Statement::For {
             initialiser,
             condition,
             increment,
             body,
-        } => todo!(),
-        Statement::Scope { body } => todo!(),
+        } => {
+            environment.push_scope_typed();
+            if let Some(initialiser) = initialiser {
+                check_statement_types(initialiser, environment)?;
+            }
+            if let Some(condition) = condition {
+                check_expression_types(condition, environment)?;
+            }
+            if let Some(increment) = increment {
+                check_statement_types(increment, environment)?;
+            }
+            check_block_types(body, environment)?;
+            environment.pop_scope_typed();
+        }
+        Statement::Scope { body } => {
+            check_block_types(body, environment)?;
+        }
         Statement::FunctionDefinition {
-            identifier,
-            parameters,
+            identifier: _,
+            parameters: _,
             body,
-        } => todo!(),
-        Statement::ExpressionStatement { expression } => todo!(),
-        Statement::Return { value } => todo!(),
-        Statement::Break => todo!(),
-        Statement::Continue => todo!(),
-        Statement::Pass => todo!(),
+            return_type: _,
+        } => {
+            check_block_types(body, environment)?;
+        }
+        Statement::ExpressionStatement { expression } => {
+            check_expression_types(expression, environment)?;
+        }
+        Statement::Return { value } => {
+            // check the function return type matches the value of the return statement?
+            todo!()
+        }
+        Statement::Break | Statement::Continue | Statement::Pass => {}
     }
 
     Ok(())
 }
 
 fn check_expression_types(
-    statement: &Statement,
+    expression: &Expression,
     environment: &SemanticEnvironment,
+) -> Result<Type, AnalysisError> {
+    Ok(Type::Unit)
+}
+
+fn check_block_types(
+    block: &Vec<Statement>,
+    environment: &mut SemanticEnvironment,
 ) -> Result<(), AnalysisError> {
+    environment.push_scope_typed();
+    for statement in block {
+        check_statement_types(statement, environment)?;
+    }
+    environment.pop_scope_typed();
     Ok(())
 }
