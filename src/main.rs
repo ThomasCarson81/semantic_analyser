@@ -203,10 +203,10 @@ fn main() {
                     )
                 }
                 AnalysisError::IntegerLiteralOutOfRange(value, target_type) => {
-                    println!("Value {value} does is out of range of target type '{target_type}'")
+                    println!("Value {value} is out of range of target type '{target_type}'")
                 }
                 AnalysisError::FloatLiteralOutOfRange(value, target_type) => {
-                    println!("Value {value} does is out of range of target type '{target_type}'")
+                    println!("Value {value} is out of range of target type '{target_type}'")
                 }
                 AnalysisError::OutOfScopes
                 | AnalysisError::FunctionAlreadyDefined(_)
