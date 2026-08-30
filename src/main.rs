@@ -593,9 +593,20 @@ fn check_expression_types(
             operator,
             right,
         } => {
-            let left_type = check_expression_types(left, environment, expected_type)?;
-            let right_type = check_expression_types(right, environment, expected_type)?;
-            check_binary_operator_types(&left_type, operator, &right_type)?
+            let expected_operand_type = if binary_operator_uses_operand_type(operator) {
+                expected_type
+            } else {
+                None
+            };
+            let left_type = check_expression_types(left, environment, expected_operand_type)?;
+            let right_type = check_expression_types(right, environment, expected_operand_type)?;
+            let result_type = check_binary_operator_types(&left_type, operator, &right_type)?;
+            if let Some(expected_type) = expected_type {
+                if result_type != expected_type {
+                    return Err(AnalysisError::TypeMismatch(expected_type, result_type));
+                }
+            }
+            result_type
         }
         Expression::UnaryOp { operator, operand } => {
             if *operator == TokenType::Minus {
@@ -663,10 +674,6 @@ fn check_binary_operator_types(
         TokenType::Minus => check_number_only_bin_op_types(left, operator, right),
         TokenType::Asterisk => check_number_only_bin_op_types(left, operator, right),
         TokenType::Slash => check_number_only_bin_op_types(left, operator, right),
-        TokenType::PlusEquals => check_plus_types(left, operator, right),
-        TokenType::MinusEquals => check_number_only_bin_op_types(left, operator, right),
-        TokenType::AsteriskEquals => check_number_only_bin_op_types(left, operator, right),
-        TokenType::SlashEquals => check_number_only_bin_op_types(left, operator, right),
         TokenType::GreaterThan => check_order_comparison_op_types(left, operator, right),
         TokenType::LessThan => check_order_comparison_op_types(left, operator, right),
         TokenType::GreaterThanOrEqualTo => check_order_comparison_op_types(left, operator, right),
@@ -831,5 +838,20 @@ fn number_fits_type(number: &Number, expected_type: &Type) -> bool {
         (Number::FloatLiteral(_), Type::F64) => true,
 
         _ => false,
+    }
+}
+
+fn binary_operator_uses_operand_type(operator: &TokenType) -> bool {
+    match operator {
+        TokenType::Plus | TokenType::Minus | TokenType::Asterisk | TokenType::Slash => true,
+        TokenType::GreaterThan
+        | TokenType::LessThan
+        | TokenType::GreaterThanOrEqualTo
+        | TokenType::LessThanOrEqualTo
+        | TokenType::EqualTo
+        | TokenType::NotEqualTo
+        | TokenType::LogicalAnd
+        | TokenType::LogicalOr => false,
+        _ => unreachable!("not a binary operator: {}", operator),
     }
 }
