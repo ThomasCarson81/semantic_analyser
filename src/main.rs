@@ -425,7 +425,7 @@ fn check_types(
     environment: &mut SemanticEnvironment,
 ) -> Result<(), AnalysisError> {
     for statement in &program.statements {
-        check_statement_types(statement, environment)?;
+        check_statement_types(statement, environment, None)?;
     }
     Ok(())
 }
@@ -433,6 +433,7 @@ fn check_types(
 fn check_statement_types(
     statement: &Statement,
     environment: &mut SemanticEnvironment,
+    expected_return_type: Option<Type>,
 ) -> Result<(), AnalysisError> {
     match statement {
         Statement::Let {
@@ -466,14 +467,14 @@ fn check_statement_types(
             else_block,
         } => {
             check_expression_types(condition, environment, Some(Type::Bool))?;
-            check_block_types(body, environment)?;
+            check_block_types(body, environment, None)?;
             if let Some(else_block) = else_block {
-                check_block_types(else_block, environment)?;
+                check_block_types(else_block, environment, None)?;
             }
         }
         Statement::While { condition, body } => {
             check_expression_types(condition, environment, Some(Type::Bool))?;
-            check_block_types(body, environment)?;
+            check_block_types(body, environment, None)?;
         }
         Statement::For {
             initialiser,
@@ -483,25 +484,25 @@ fn check_statement_types(
         } => {
             environment.push_scope_typed();
             if let Some(initialiser) = initialiser {
-                check_statement_types(initialiser, environment)?;
+                check_statement_types(initialiser, environment, None)?;
             }
             if let Some(condition) = condition {
                 check_expression_types(condition, environment, Some(Type::Bool))?;
             }
             if let Some(increment) = increment {
-                check_statement_types(increment, environment)?;
+                check_statement_types(increment, environment, None)?;
             }
-            check_block_types(body, environment)?;
+            check_block_types(body, environment, None)?;
             environment.pop_scope_typed();
         }
         Statement::Scope { body } => {
-            check_block_types(body, environment)?;
+            check_block_types(body, environment, None)?;
         }
         Statement::FunctionDefinition {
             identifier: _,
             parameters,
             body,
-            return_type: _,
+            return_type,
         } => {
             environment.push_scope_typed();
             for param in parameters {
@@ -511,16 +512,15 @@ fn check_statement_types(
                 };
                 environment.define_typed(param.name.clone(), param_symbol)?;
             }
-            check_block_types(body, environment)?;
+            check_block_types(body, environment, Some(*return_type))?;
             environment.pop_scope_typed();
         }
         Statement::ExpressionStatement { expression } => {
             check_expression_types(expression, environment, None)?;
         }
         Statement::Return { value } => {
-            // checking the resulting type is correct for the function will happen in a later pass
             if let Some(expr) = value {
-                check_expression_types(expr, environment, None)?;
+                check_expression_types(expr, environment, expected_return_type)?;
             }
         }
         Statement::Break | Statement::Continue | Statement::Pass => {}
@@ -643,10 +643,11 @@ fn check_expression_types(
 fn check_block_types(
     block: &Vec<Statement>,
     environment: &mut SemanticEnvironment,
+    expected_return_type: Option<Type>,
 ) -> Result<(), AnalysisError> {
     environment.push_scope_typed();
     for statement in block {
-        check_statement_types(statement, environment)?;
+        check_statement_types(statement, environment, expected_return_type)?;
     }
     environment.pop_scope_typed();
     Ok(())
