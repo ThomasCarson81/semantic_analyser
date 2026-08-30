@@ -17,7 +17,6 @@ enum AnalysisError {
     BinOpTypeError(TokenType, Type, Type),
     UnOpTypeError(TokenType, Type),
     IntegerLiteralOutOfRange(i64, Type),
-    FloatLiteralOutOfRange(f64, Type),
     CannotMutate(String),
     CouldNotReadFile(String),
 }
@@ -107,7 +106,7 @@ fn main() {
         println!("Please provide a file to analyse.");
         return;
     }
-    let program = match get_ast_from_file(&args[1]) {
+    let mut program = match get_ast_from_file(&args[1]) {
         Ok(ast) => ast,
         Err(e) => {
             match e {
@@ -178,7 +177,7 @@ fn main() {
     // clear name resolution data
     environment.scopes.clear();
     environment.push_scope();
-    match check_types(&program, &mut environment) {
+    match check_types(&mut program, &mut environment) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -203,9 +202,6 @@ fn main() {
                     )
                 }
                 AnalysisError::IntegerLiteralOutOfRange(value, target_type) => {
-                    println!("Value {value} is out of range of target type '{target_type}'")
-                }
-                AnalysisError::FloatLiteralOutOfRange(value, target_type) => {
                     println!("Value {value} is out of range of target type '{target_type}'")
                 }
                 AnalysisError::OutOfScopes
@@ -421,17 +417,17 @@ fn resolve_block(
 }
 
 fn check_types(
-    program: &Program,
+    program: &mut Program,
     environment: &mut SemanticEnvironment,
 ) -> Result<(), AnalysisError> {
-    for statement in &program.statements {
+    for statement in &mut program.statements {
         check_statement_types(statement, environment, None)?;
     }
     Ok(())
 }
 
 fn check_statement_types(
-    statement: &Statement,
+    statement: &mut Statement,
     environment: &mut SemanticEnvironment,
     expected_return_type: Option<Type>,
 ) -> Result<(), AnalysisError> {
@@ -530,7 +526,7 @@ fn check_statement_types(
 }
 
 fn check_expression_types(
-    expression: &Expression,
+    expression: &mut Expression,
     environment: &SemanticEnvironment,
     expected_type: Option<Type>,
 ) -> Result<Type, AnalysisError> {
@@ -541,33 +537,17 @@ fn check_expression_types(
             Value::Bool(_) => Type::Bool,
             Value::Number(number) => match number {
                 Number::IntegerLiteral(value) => {
-                    if let Some(expected_type) = expected_type {
-                        if number_fits_type(number, &expected_type) {
-                            expected_type
-                        } else {
-                            return Err(AnalysisError::IntegerLiteralOutOfRange(
-                                *value,
-                                expected_type,
-                            ));
-                        }
-                    } else {
-                        Type::I32
-                    }
+                    let (resolved, ty) = resolve_integer_literal(*value, expected_type)?;
+
+                    *number = resolved;
+                    ty
                 }
 
                 Number::FloatLiteral(value) => {
-                    if let Some(expected_type) = expected_type {
-                        if number_fits_type(number, &expected_type) {
-                            expected_type
-                        } else {
-                            return Err(AnalysisError::FloatLiteralOutOfRange(
-                                *value,
-                                expected_type,
-                            ));
-                        }
-                    } else {
-                        Type::F64
-                    }
+                    let (resolved, ty) = resolve_float_literal(*value, expected_type)?;
+
+                    *number = resolved;
+                    ty
                 }
 
                 Number::I8(_) => Type::I8,
@@ -611,23 +591,16 @@ fn check_expression_types(
         Expression::UnaryOp { operator, operand } => {
             if *operator == TokenType::Minus {
                 if let Expression::Literal(Value::Number(Number::IntegerLiteral(value))) =
-                    operand.as_ref()
+                    operand.as_mut()
                 {
                     let value = -*value;
 
-                    if let Some(expected_type) = expected_type {
-                        if number_fits_type(&Number::IntegerLiteral(value), &expected_type) {
-                            return Ok(expected_type);
-                        } else {
-                            return Err(AnalysisError::IntegerLiteralOutOfRange(
-                                value,
-                                expected_type,
-                            ));
-                        }
-                    }
+                    let (resolved_number, resolved_type) =
+                        resolve_integer_literal(value, expected_type)?;
 
-                    // No expected type -> default integer type
-                    return Ok(Type::I32);
+                    *operand = Box::new(Expression::Literal(Value::Number(resolved_number)));
+
+                    return Ok(resolved_type);
                 }
             }
 
@@ -652,7 +625,7 @@ fn check_expression_types(
 }
 
 fn check_block_types(
-    block: &Vec<Statement>,
+    block: &mut Vec<Statement>,
     environment: &mut SemanticEnvironment,
     expected_return_type: Option<Type>,
 ) -> Result<(), AnalysisError> {
@@ -822,25 +795,6 @@ fn check_bool_only_un_op_types(
     }
 }
 
-fn number_fits_type(number: &Number, expected_type: &Type) -> bool {
-    match (number, expected_type) {
-        (Number::IntegerLiteral(value), Type::I8) => i8::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(value), Type::I16) => i16::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(value), Type::I32) => i32::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(_), Type::I64) => true,
-
-        (Number::IntegerLiteral(value), Type::U8) => u8::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(value), Type::U16) => u16::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(value), Type::U32) => u32::try_from(*value).is_ok(),
-        (Number::IntegerLiteral(value), Type::U64) => *value >= 0,
-
-        (Number::FloatLiteral(_), Type::F32) => true,
-        (Number::FloatLiteral(_), Type::F64) => true,
-
-        _ => false,
-    }
-}
-
 fn binary_operator_uses_operand_type(operator: &TokenType) -> bool {
     match operator {
         TokenType::Plus | TokenType::Minus | TokenType::Asterisk | TokenType::Slash => true,
@@ -854,4 +808,68 @@ fn binary_operator_uses_operand_type(operator: &TokenType) -> bool {
         | TokenType::LogicalOr => false,
         _ => unreachable!("not a binary operator: {}", operator),
     }
+}
+
+fn resolve_integer_literal(
+    value: i64,
+    expected_type: Option<Type>,
+) -> Result<(Number, Type), AnalysisError> {
+    let target_type = expected_type.unwrap_or(Type::I32);
+
+    let number = match target_type {
+        Type::I8 => Number::I8(
+            i8::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::I16 => Number::I16(
+            i16::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::I32 => Number::I32(
+            i32::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::I64 => Number::I64(value),
+
+        Type::U8 => Number::U8(
+            u8::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::U16 => Number::U16(
+            u16::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::U32 => Number::U32(
+            u32::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+        Type::U64 => Number::U64(
+            u64::try_from(value)
+                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
+        ),
+
+        _ => {
+            return Err(AnalysisError::TypeMismatch(target_type, Type::I32));
+        }
+    };
+
+    Ok((number, target_type))
+}
+
+fn resolve_float_literal(
+    value: f64,
+    expected_type: Option<Type>,
+) -> Result<(Number, Type), AnalysisError> {
+    let target_type = expected_type.unwrap_or(Type::F64);
+
+    let number = match target_type {
+        Type::F32 => Number::F32(value as f32),
+        Type::F64 => Number::F64(value),
+
+        _ => {
+            return Err(AnalysisError::TypeMismatch(target_type, Type::F64));
+        }
+    };
+
+    Ok((number, target_type))
 }
