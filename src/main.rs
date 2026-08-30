@@ -2,7 +2,9 @@ use std::{
     collections::{HashMap, HashSet},
     env,
 };
-use syntax::{Expression, FunctionSymbol, Program, Statement, Symbol, Type};
+use syntax::{
+    Expression, FunctionSymbol, Number, Program, Statement, Symbol, TokenType, Type, Value,
+};
 
 enum AnalysisError {
     OutOfScopes,
@@ -12,6 +14,10 @@ enum AnalysisError {
     FunctionNotDefined(String),
     FunctionArgumentCountMismatch(String, usize, usize),
     TypeMismatch(Type, Type),
+    BinOpTypeError(TokenType, Type, Type),
+    UnOpTypeError(TokenType, Type),
+    IntegerLiteralOutOfRange(i64, Type),
+    FloatLiteralOutOfRange(f64, Type),
     CannotMutate(String),
     CouldNotReadFile(String),
 }
@@ -184,6 +190,24 @@ fn main() {
                         "Cannot mutate immutable variable '{name}'. Consider adding 'mut' to the declaration. (let mut {name} = ...;)"
                     )
                 }
+                AnalysisError::BinOpTypeError(operator, left, right) => {
+                    println!(
+                        "Operator: '{}' is incompatible with types '{}' and '{}'.",
+                        operator, left, right
+                    )
+                }
+                AnalysisError::UnOpTypeError(operator, operand) => {
+                    println!(
+                        "Operator: '{}' is incompatible with type '{}'.",
+                        operator, operand
+                    )
+                }
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type) => {
+                    println!("Value {value} does is out of range of target type '{target_type}'")
+                }
+                AnalysisError::FloatLiteralOutOfRange(value, target_type) => {
+                    println!("Value {value} does is out of range of target type '{target_type}'")
+                }
                 AnalysisError::OutOfScopes
                 | AnalysisError::FunctionAlreadyDefined(_)
                 | AnalysisError::FunctionNotDefined(_)
@@ -311,11 +335,16 @@ fn resolve_statement(
         }
         Statement::FunctionDefinition {
             identifier: _,
-            parameters: _,
+            parameters,
             body,
             return_type: _,
         } => {
+            environment.push_scope();
+            for param in parameters {
+                environment.define(param.name.clone())?;
+            }
             resolve_block(body, environment)?;
+            environment.pop_scope();
         }
         Statement::ExpressionStatement { expression } => {
             resolve_expression(expression, environment)?;
@@ -412,12 +441,7 @@ fn check_statement_types(
             mutable,
             var_type,
         } => {
-            let expr_type = check_expression_types(expression, environment)?;
-            if let Some(annotation) = var_type {
-                if *annotation != expr_type {
-                    return Err(AnalysisError::TypeMismatch(*annotation, expr_type));
-                }
-            }
+            let expr_type = check_expression_types(expression, environment, *var_type)?;
             let symbol = Symbol {
                 mutable: *mutable,
                 var_type: expr_type,
@@ -434,30 +458,21 @@ fn check_statement_types(
             if !stored_var.mutable {
                 return Err(AnalysisError::CannotMutate(identifier.clone()));
             }
-            let expr_type = check_expression_types(expression, environment)?;
-            if stored_var.var_type != expr_type {
-                return Err(AnalysisError::TypeMismatch(stored_var.var_type, expr_type));
-            }
+            check_expression_types(expression, environment, Some(stored_var.var_type))?;
         }
         Statement::If {
             condition,
             body,
             else_block,
         } => {
-            let condition_type = check_expression_types(condition, environment)?;
-            if condition_type != Type::Bool {
-                return Err(AnalysisError::TypeMismatch(Type::Bool, condition_type));
-            }
+            check_expression_types(condition, environment, Some(Type::Bool))?;
             check_block_types(body, environment)?;
             if let Some(else_block) = else_block {
                 check_block_types(else_block, environment)?;
             }
         }
         Statement::While { condition, body } => {
-            let condition_type = check_expression_types(condition, environment)?;
-            if condition_type != Type::Bool {
-                return Err(AnalysisError::TypeMismatch(Type::Bool, condition_type));
-            }
+            check_expression_types(condition, environment, Some(Type::Bool))?;
             check_block_types(body, environment)?;
         }
         Statement::For {
@@ -471,7 +486,7 @@ fn check_statement_types(
                 check_statement_types(initialiser, environment)?;
             }
             if let Some(condition) = condition {
-                check_expression_types(condition, environment)?;
+                check_expression_types(condition, environment, Some(Type::Bool))?;
             }
             if let Some(increment) = increment {
                 check_statement_types(increment, environment)?;
@@ -484,18 +499,29 @@ fn check_statement_types(
         }
         Statement::FunctionDefinition {
             identifier: _,
-            parameters: _,
+            parameters,
             body,
             return_type: _,
         } => {
+            environment.push_scope_typed();
+            for param in parameters {
+                let param_symbol = Symbol {
+                    mutable: false,
+                    var_type: param.param_type,
+                };
+                environment.define_typed(param.name.clone(), param_symbol)?;
+            }
             check_block_types(body, environment)?;
+            environment.pop_scope_typed();
         }
         Statement::ExpressionStatement { expression } => {
-            check_expression_types(expression, environment)?;
+            check_expression_types(expression, environment, None)?;
         }
         Statement::Return { value } => {
-            // check the function return type matches the value of the return statement?
-            todo!()
+            // checking the resulting type is correct for the function will happen in a later pass
+            if let Some(expr) = value {
+                check_expression_types(expr, environment, None)?;
+            }
         }
         Statement::Break | Statement::Continue | Statement::Pass => {}
     }
@@ -506,8 +532,112 @@ fn check_statement_types(
 fn check_expression_types(
     expression: &Expression,
     environment: &SemanticEnvironment,
+    expected_type: Option<Type>,
 ) -> Result<Type, AnalysisError> {
-    Ok(Type::Unit)
+    Ok(match expression {
+        Expression::Literal(value) => match value {
+            Value::Unit => Type::Unit,
+            Value::String(_) => Type::String,
+            Value::Bool(_) => Type::Bool,
+            Value::Number(number) => match number {
+                Number::IntegerLiteral(value) => {
+                    if let Some(expected_type) = expected_type {
+                        if number_fits_type(number, &expected_type) {
+                            expected_type
+                        } else {
+                            return Err(AnalysisError::IntegerLiteralOutOfRange(
+                                *value,
+                                expected_type,
+                            ));
+                        }
+                    } else {
+                        Type::I32
+                    }
+                }
+
+                Number::FloatLiteral(value) => {
+                    if let Some(expected_type) = expected_type {
+                        if number_fits_type(number, &expected_type) {
+                            expected_type
+                        } else {
+                            return Err(AnalysisError::FloatLiteralOutOfRange(
+                                *value,
+                                expected_type,
+                            ));
+                        }
+                    } else {
+                        Type::F64
+                    }
+                }
+
+                Number::I8(_) => Type::I8,
+                Number::I16(_) => Type::I16,
+                Number::I32(_) => Type::I32,
+                Number::I64(_) => Type::I64,
+                Number::U8(_) => Type::U8,
+                Number::U16(_) => Type::U16,
+                Number::U32(_) => Type::U32,
+                Number::U64(_) => Type::U64,
+                Number::F32(_) => Type::F32,
+                Number::F64(_) => Type::F64,
+            },
+        },
+        Expression::Identifier(name) => {
+            environment
+                .get_typed(name)
+                .ok_or(AnalysisError::UndeclaredVariable(name.clone()))?
+                .var_type
+        }
+        Expression::BinaryOp {
+            left,
+            operator,
+            right,
+        } => {
+            let left_type = check_expression_types(left, environment, expected_type)?;
+            let right_type = check_expression_types(right, environment, expected_type)?;
+            check_binary_operator_types(&left_type, operator, &right_type)?
+        }
+        Expression::UnaryOp { operator, operand } => {
+            if *operator == TokenType::Minus {
+                if let Expression::Literal(Value::Number(Number::IntegerLiteral(value))) =
+                    operand.as_ref()
+                {
+                    let value = -*value;
+
+                    if let Some(expected_type) = expected_type {
+                        if number_fits_type(&Number::IntegerLiteral(value), &expected_type) {
+                            return Ok(expected_type);
+                        } else {
+                            return Err(AnalysisError::IntegerLiteralOutOfRange(
+                                value,
+                                expected_type,
+                            ));
+                        }
+                    }
+
+                    // No expected type -> default integer type
+                    return Ok(Type::I32);
+                }
+            }
+
+            let operand_type = check_expression_types(operand, environment, expected_type)?;
+
+            check_unary_operator_types(operator, &operand_type)?
+        }
+        Expression::FunctionCall {
+            identifier,
+            arguments,
+        } => {
+            let func_symbol = environment.get_func(identifier)?;
+            for (param, arg) in func_symbol.parameters.iter().zip(arguments) {
+                let arg_type = check_expression_types(arg, environment, Some(param.param_type))?;
+                if param.param_type != arg_type {
+                    return Err(AnalysisError::TypeMismatch(param.param_type, arg_type));
+                }
+            }
+            func_symbol.return_type
+        }
+    })
 }
 
 fn check_block_types(
@@ -520,4 +650,185 @@ fn check_block_types(
     }
     environment.pop_scope_typed();
     Ok(())
+}
+
+fn check_binary_operator_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match operator {
+        TokenType::Plus => check_plus_types(left, operator, right),
+        TokenType::Minus => check_number_only_bin_op_types(left, operator, right),
+        TokenType::Asterisk => check_number_only_bin_op_types(left, operator, right),
+        TokenType::Slash => check_number_only_bin_op_types(left, operator, right),
+        TokenType::PlusEquals => check_plus_types(left, operator, right),
+        TokenType::MinusEquals => check_number_only_bin_op_types(left, operator, right),
+        TokenType::AsteriskEquals => check_number_only_bin_op_types(left, operator, right),
+        TokenType::SlashEquals => check_number_only_bin_op_types(left, operator, right),
+        TokenType::GreaterThan => check_order_comparison_op_types(left, operator, right),
+        TokenType::LessThan => check_order_comparison_op_types(left, operator, right),
+        TokenType::GreaterThanOrEqualTo => check_order_comparison_op_types(left, operator, right),
+        TokenType::LessThanOrEqualTo => check_order_comparison_op_types(left, operator, right),
+        TokenType::EqualTo => check_equivalence_comparison_op_types(left, operator, right),
+        TokenType::NotEqualTo => check_equivalence_comparison_op_types(left, operator, right),
+        TokenType::LogicalAnd => check_logical_bin_op_types(left, operator, right),
+        TokenType::LogicalOr => check_logical_bin_op_types(left, operator, right),
+        _ => unreachable!(
+            "Invalid binary operator during type checking: '{}'.",
+            operator
+        ),
+    }
+}
+
+fn check_plus_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match (left, right) {
+        (Type::U8, Type::U8)
+        | (Type::U16, Type::U16)
+        | (Type::U32, Type::U32)
+        | (Type::U64, Type::U64)
+        | (Type::I8, Type::I8)
+        | (Type::I16, Type::I16)
+        | (Type::I32, Type::I32)
+        | (Type::I64, Type::I64)
+        | (Type::F32, Type::F32)
+        | (Type::F64, Type::F64)
+        | (Type::String, Type::String) => Ok(*left),
+        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+    }
+}
+
+fn check_number_only_bin_op_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match (left, right) {
+        (Type::U8, Type::U8)
+        | (Type::U16, Type::U16)
+        | (Type::U32, Type::U32)
+        | (Type::U64, Type::U64)
+        | (Type::I8, Type::I8)
+        | (Type::I16, Type::I16)
+        | (Type::I32, Type::I32)
+        | (Type::I64, Type::I64)
+        | (Type::F32, Type::F32)
+        | (Type::F64, Type::F64) => Ok(*left),
+        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+    }
+}
+
+fn check_order_comparison_op_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match (left, right) {
+        (Type::U8, Type::U8)
+        | (Type::U16, Type::U16)
+        | (Type::U32, Type::U32)
+        | (Type::U64, Type::U64)
+        | (Type::I8, Type::I8)
+        | (Type::I16, Type::I16)
+        | (Type::I32, Type::I32)
+        | (Type::I64, Type::I64)
+        | (Type::F32, Type::F32)
+        | (Type::F64, Type::F64) => Ok(Type::Bool),
+        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+    }
+}
+
+fn check_equivalence_comparison_op_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match (left, right) {
+        (Type::U8, Type::U8)
+        | (Type::U16, Type::U16)
+        | (Type::U32, Type::U32)
+        | (Type::U64, Type::U64)
+        | (Type::I8, Type::I8)
+        | (Type::I16, Type::I16)
+        | (Type::I32, Type::I32)
+        | (Type::I64, Type::I64)
+        | (Type::F32, Type::F32)
+        | (Type::F64, Type::F64)
+        | (Type::Bool, Type::Bool)
+        | (Type::String, Type::String) => Ok(Type::Bool),
+        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+    }
+}
+
+fn check_logical_bin_op_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    match (left, right) {
+        (Type::Bool, Type::Bool) => Ok(Type::Bool),
+        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+    }
+}
+
+fn check_unary_operator_types(operator: &TokenType, operand: &Type) -> Result<Type, AnalysisError> {
+    match operator {
+        TokenType::Increment => check_number_only_un_op_types(operator, operand),
+        TokenType::Decrement => check_number_only_un_op_types(operator, operand),
+        TokenType::Not => check_bool_only_un_op_types(operator, operand),
+        TokenType::Minus => check_number_only_un_op_types(operator, operand),
+        _ => unreachable!("Invalid unary operator during type checking: {}", operator),
+    }
+}
+
+fn check_number_only_un_op_types(
+    operator: &TokenType,
+    operand: &Type,
+) -> Result<Type, AnalysisError> {
+    match operand {
+        Type::U8
+        | Type::U16
+        | Type::U32
+        | Type::U64
+        | Type::I8
+        | Type::I16
+        | Type::I32
+        | Type::I64
+        | Type::F32
+        | Type::F64 => Ok(*operand),
+        _ => Err(AnalysisError::UnOpTypeError(*operator, *operand)),
+    }
+}
+
+fn check_bool_only_un_op_types(
+    operator: &TokenType,
+    operand: &Type,
+) -> Result<Type, AnalysisError> {
+    match operand {
+        Type::Bool => Ok(*operand),
+        _ => Err(AnalysisError::UnOpTypeError(*operator, *operand)),
+    }
+}
+
+fn number_fits_type(number: &Number, expected_type: &Type) -> bool {
+    match (number, expected_type) {
+        (Number::IntegerLiteral(value), Type::I8) => i8::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(value), Type::I16) => i16::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(value), Type::I32) => i32::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(_), Type::I64) => true,
+
+        (Number::IntegerLiteral(value), Type::U8) => u8::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(value), Type::U16) => u16::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(value), Type::U32) => u32::try_from(*value).is_ok(),
+        (Number::IntegerLiteral(value), Type::U64) => *value >= 0,
+
+        (Number::FloatLiteral(_), Type::F32) => true,
+        (Number::FloatLiteral(_), Type::F64) => true,
+
+        _ => false,
+    }
 }
