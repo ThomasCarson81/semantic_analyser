@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    env,
+    env, fs,
 };
 use syntax::{
     Expression, FunctionSymbol, Number, Program, Statement, Symbol, TokenType, Type, Value,
@@ -102,7 +102,7 @@ impl SemanticEnvironment {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
+    if args.len() < 2 {
         println!("Please provide a file to analyse.");
         return;
     }
@@ -220,7 +220,9 @@ fn main() {
 
     // context check for control flow
 
-    // output checked ast? perhaps not necessary
+    if args.len() == 3 {
+        output_checked_ast(&program, &args[2]);
+    }
     // output function table??
 }
 
@@ -230,6 +232,19 @@ fn get_ast_from_file(file_path: &str) -> Result<Program, AnalysisError> {
     let program: Program =
         serde_json::from_str(&ast).map_err(|e| AnalysisError::CouldNotReadFile(e.to_string()))?;
     Ok(program)
+}
+
+fn output_checked_ast(program: &Program, file_path: &str) {
+    let json = serde_json::to_string_pretty(program);
+    match json {
+        Ok(json) => {
+            fs::write(file_path, json).expect("Unable to write to file");
+        }
+        Err(e) => {
+            println!("Error serialising checked AST JSON: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn collect_functions(
