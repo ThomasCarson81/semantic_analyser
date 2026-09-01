@@ -2,10 +2,18 @@ use std::{
     collections::{HashMap, HashSet},
     env, fs,
 };
+
 use syntax::{
-    Expression, FunctionSymbol, Number, Program, Statement, Symbol, TokenType, Type, Value,
+    ast::{Expression, Program, Statement, TokenType},
+    functions::{
+        Function, FunctionBody, FunctionId, FunctionImplementation::Oxide, FunctionSignature,
+        FunctionTable,
+    },
+    semantics::Symbol,
+    types::{Number, Type, Value},
 };
 
+#[derive(Debug)]
 enum AnalysisError {
     OutOfScopes,
     VariableAlreadyDeclared(String),
@@ -18,20 +26,21 @@ enum AnalysisError {
     UnOpTypeError(TokenType, Type),
     IntegerLiteralOutOfRange(i64, Type),
     CannotMutate(String),
+    TopLevelStatement,
+    NoMainFunction,
     CouldNotReadFile(String),
 }
 
 struct SemanticEnvironment {
     scopes: Vec<HashSet<String>>,
     scopes_typed: Vec<HashMap<String, Symbol>>,
-    functions: HashMap<String, FunctionSymbol>,
 }
 impl SemanticEnvironment {
     fn new() -> Self {
         Self {
             scopes: vec![HashSet::new()],
             scopes_typed: vec![HashMap::new()],
-            functions: HashMap::new(),
+            // functions: HashMap::new(),
         }
     }
 
@@ -84,20 +93,6 @@ impl SemanticEnvironment {
             .rev()
             .find_map(|scope| scope.get(name))
     }
-
-    fn define_func(&mut self, name: String, symbol: FunctionSymbol) -> Result<(), AnalysisError> {
-        if self.functions.contains_key(&name) {
-            return Err(AnalysisError::FunctionAlreadyDefined(name));
-        }
-        self.functions.insert(name, symbol);
-        Ok(())
-    }
-
-    fn get_func(&self, name: &String) -> Result<&FunctionSymbol, AnalysisError> {
-        self.functions
-            .get(name)
-            .ok_or(AnalysisError::FunctionNotDefined(name.clone()))
-    }
 }
 
 fn main() {
@@ -119,8 +114,11 @@ fn main() {
         }
     };
     let mut environment = SemanticEnvironment::new();
-
-    match collect_functions(&program, &mut environment) {
+    let mut function_table = FunctionTable {
+        functions: Vec::new(),
+    };
+    let mut global_table: Vec<Statement> = Vec::new();
+    match collect_functions_and_globals(&program, &mut function_table, &mut global_table) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -128,6 +126,14 @@ fn main() {
                     println!(
                         "Function '{name}' already defined. Overrides are not currently supported."
                     );
+                }
+                AnalysisError::TopLevelStatement => {
+                    println!(
+                        "The only top level statements allowed are global variable declarations and function definitions."
+                    )
+                }
+                AnalysisError::NoMainFunction => {
+                    println!("Please provide a function called 'main' with no parameters.")
                 }
                 _ => unreachable!(
                     "Semantic Analyser encountered an unexpected error when collecting functions."
@@ -137,7 +143,7 @@ fn main() {
         }
     }
 
-    match resolve_names(&program, &mut environment) {
+    match resolve_names(&mut program, &mut environment, &function_table) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -177,7 +183,7 @@ fn main() {
     // clear name resolution data
     environment.scopes.clear();
     environment.push_scope();
-    match check_types(&mut program, &mut environment) {
+    match check_types(&mut program, &mut environment, &function_table) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -210,6 +216,8 @@ fn main() {
                 | AnalysisError::FunctionArgumentCountMismatch(_, _, _)
                 | AnalysisError::VariableAlreadyDeclared(_)
                 | AnalysisError::UndeclaredVariable(_)
+                | AnalysisError::TopLevelStatement
+                | AnalysisError::NoMainFunction
                 | AnalysisError::CouldNotReadFile(_) => unreachable!(
                     "Semantic Analyser encountered an unexpected error when checking types."
                 ),
@@ -247,46 +255,89 @@ fn output_checked_ast(program: &Program, file_path: &str) {
     }
 }
 
-fn collect_functions(
+fn collect_functions_and_globals(
     program: &Program,
-    environment: &mut SemanticEnvironment,
+    func_table: &mut FunctionTable,
+    global_table: &mut Vec<Statement>,
 ) -> Result<(), AnalysisError> {
     for statement in &program.statements {
         match statement {
             Statement::FunctionDefinition {
                 identifier,
                 parameters,
-                body: _,
+                body,
                 return_type,
             } => {
-                let func_symbol = FunctionSymbol {
-                    parameters: parameters.clone(),
+                let function_body = FunctionBody {
+                    statements: body.clone(),
+                };
+                let function_signature = FunctionSignature {
+                    name: identifier.clone(),
+                    parameters: parameters.iter().map(|fp| fp.param_type).collect(),
                     return_type: *return_type,
                 };
-                environment.define_func(identifier.clone(), func_symbol)?;
+                if func_table
+                    .has_function_with_parameters(identifier, &function_signature.parameters)
+                {
+                    return Err(AnalysisError::FunctionAlreadyDefined(identifier.clone()));
+                }
+
+                let func = Function {
+                    id: FunctionId(func_table.functions.len()),
+                    implementation: Oxide(function_body),
+                    signature: function_signature,
+                };
+                func_table.functions.push(func);
             }
-            _ => {
-                // TODO: disallow top level statements
-                // return Err(...)
+            Statement::Let { .. } => {
+                global_table.push(statement.clone());
             }
+            _ => return Err(AnalysisError::TopLevelStatement),
         }
+    }
+    let main_signature = FunctionSignature {
+        name: "main".into(),
+        parameters: vec![],
+        return_type: Type::Unit,
+    };
+    if !func_table.has_function(main_signature) {
+        return Err(AnalysisError::NoMainFunction);
     }
     Ok(())
 }
 
 fn resolve_names(
-    program: &Program,
+    program: &mut Program,
     environment: &mut SemanticEnvironment,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
-    for statement in &program.statements {
-        resolve_statement(statement, environment)?;
+    // Resolve globals first so every function sees the complete global scope,
+    // regardless of where its definition appears in the source file.
+    for statement in &mut program.statements {
+        if matches!(statement, Statement::Let { .. }) {
+            resolve_statement(statement, environment, func_table)?;
+        }
+    }
+    for statement in &mut program.statements {
+        if matches!(statement, Statement::FunctionDefinition { .. }) {
+            resolve_statement(statement, environment, func_table)?;
+        }
+    }
+    for statement in &mut program.statements {
+        if !matches!(
+            statement,
+            Statement::Let { .. } | Statement::FunctionDefinition { .. }
+        ) {
+            resolve_statement(statement, environment, func_table)?;
+        }
     }
     Ok(())
 }
 
 fn resolve_statement(
-    statement: &Statement,
+    statement: &mut Statement,
     environment: &mut SemanticEnvironment,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
     match statement {
         Statement::Let {
@@ -295,14 +346,14 @@ fn resolve_statement(
             mutable: _,
             var_type: _,
         } => {
-            resolve_expression(&expression, environment)?;
+            resolve_expression(expression, environment, func_table)?;
             environment.define(identifier.clone())?;
         }
         Statement::Assignment {
             identifier,
             expression,
         } => {
-            resolve_expression(expression, environment)?;
+            resolve_expression(expression, environment, func_table)?;
             if !environment.get(identifier) {
                 return Err(AnalysisError::UndeclaredVariable(identifier.clone()));
             }
@@ -312,15 +363,15 @@ fn resolve_statement(
             body,
             else_block,
         } => {
-            resolve_expression(condition, environment)?;
-            resolve_block(body, environment)?;
+            resolve_expression(condition, environment, func_table)?;
+            resolve_block(body, environment, func_table)?;
             if let Some(else_block) = else_block {
-                resolve_block(else_block, environment)?;
+                resolve_block(else_block, environment, func_table)?;
             }
         }
         Statement::While { condition, body } => {
-            resolve_expression(condition, environment)?;
-            resolve_block(body, environment)?;
+            resolve_expression(condition, environment, func_table)?;
+            resolve_block(body, environment, func_table)?;
         }
         Statement::For {
             initialiser,
@@ -330,19 +381,19 @@ fn resolve_statement(
         } => {
             environment.push_scope();
             if let Some(init) = initialiser {
-                resolve_statement(init, environment)?;
+                resolve_statement(init, environment, func_table)?;
             }
             if let Some(condition) = condition {
-                resolve_expression(condition, environment)?;
+                resolve_expression(condition, environment, func_table)?;
             }
-            resolve_block(body, environment)?;
+            resolve_block(body, environment, func_table)?;
             if let Some(increment) = increment {
-                resolve_statement(increment, environment)?;
+                resolve_statement(increment, environment, func_table)?;
             }
             environment.pop_scope();
         }
         Statement::Scope { body } => {
-            resolve_block(body, environment)?;
+            resolve_block(body, environment, func_table)?;
         }
         Statement::FunctionDefinition {
             identifier: _,
@@ -354,15 +405,15 @@ fn resolve_statement(
             for param in parameters {
                 environment.define(param.name.clone())?;
             }
-            resolve_block(body, environment)?;
+            resolve_block(body, environment, func_table)?;
             environment.pop_scope();
         }
         Statement::ExpressionStatement { expression } => {
-            resolve_expression(expression, environment)?;
+            resolve_expression(expression, environment, func_table)?;
         }
         Statement::Return { value } => {
             if let Some(expression) = value {
-                resolve_expression(expression, environment)?;
+                resolve_expression(expression, environment, func_table)?;
             }
         }
         Statement::Break | Statement::Continue | Statement::Pass => (),
@@ -371,8 +422,9 @@ fn resolve_statement(
 }
 
 fn resolve_expression(
-    expression: &Expression,
+    expression: &mut Expression,
     environment: &SemanticEnvironment,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
     match expression {
         Expression::Literal(_) => {}
@@ -386,33 +438,42 @@ fn resolve_expression(
             operator: _,
             right,
         } => {
-            resolve_expression(left, environment)?;
-            resolve_expression(right, environment)?;
+            resolve_expression(left, environment, func_table)?;
+            resolve_expression(right, environment, func_table)?;
         }
         Expression::UnaryOp {
             operator: _,
             operand,
         } => {
-            resolve_expression(operand, environment)?;
+            resolve_expression(operand, environment, func_table)?;
         }
-        Expression::FunctionCall {
+        Expression::UnresolvedFunctionCall {
             identifier,
             arguments,
         } => {
-            let func = environment.get_func(identifier)?;
-
-            for argument in arguments {
-                resolve_expression(argument, environment)?;
+            let mut candidates = func_table
+                .functions_named(identifier)
+                .filter(|function| function.signature.parameters.len() == arguments.len());
+            let parameter_count = candidates
+                .next()
+                .map(|function| function.signature.parameters.len())
+                .ok_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))?;
+            for argument in &mut *arguments {
+                resolve_expression(argument, environment, func_table)?;
             }
             let num_args = arguments.len();
-            let num_params = func.parameters.len();
-            if num_args != num_params {
+            if num_args != parameter_count {
                 return Err(AnalysisError::FunctionArgumentCountMismatch(
                     identifier.clone(),
-                    num_params,
+                    parameter_count,
                     num_args,
                 ));
             }
+            // Overload selection requires argument types, so retain the
+            // unresolved node until the type-checking pass.
+        }
+        Expression::ResolvedFunctionCall { .. } => {
+            unreachable!("function call already resolved before semantic analysis")
         }
     }
 
@@ -420,12 +481,13 @@ fn resolve_expression(
 }
 
 fn resolve_block(
-    block: &Vec<Statement>,
+    block: &mut Vec<Statement>,
     environment: &mut SemanticEnvironment,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
     environment.push_scope();
     for statement in block {
-        resolve_statement(statement, environment)?;
+        resolve_statement(statement, environment, func_table)?;
     }
     environment.pop_scope();
     Ok(())
@@ -434,9 +496,19 @@ fn resolve_block(
 fn check_types(
     program: &mut Program,
     environment: &mut SemanticEnvironment,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
+    // Like name resolution, type globals before function bodies so globals are
+    // available from every function definition.
     for statement in &mut program.statements {
-        check_statement_types(statement, environment, None)?;
+        if matches!(statement, Statement::Let { .. }) {
+            check_statement_types(statement, environment, None, func_table)?;
+        }
+    }
+    for statement in &mut program.statements {
+        if matches!(statement, Statement::FunctionDefinition { .. }) {
+            check_statement_types(statement, environment, None, func_table)?;
+        }
     }
     Ok(())
 }
@@ -445,6 +517,7 @@ fn check_statement_types(
     statement: &mut Statement,
     environment: &mut SemanticEnvironment,
     expected_return_type: Option<Type>,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
     match statement {
         Statement::Let {
@@ -453,7 +526,7 @@ fn check_statement_types(
             mutable,
             var_type,
         } => {
-            let expr_type = check_expression_types(expression, environment, *var_type)?;
+            let expr_type = check_expression_types(expression, environment, *var_type, func_table)?;
             let symbol = Symbol {
                 mutable: *mutable,
                 var_type: expr_type,
@@ -470,22 +543,27 @@ fn check_statement_types(
             if !stored_var.mutable {
                 return Err(AnalysisError::CannotMutate(identifier.clone()));
             }
-            check_expression_types(expression, environment, Some(stored_var.var_type))?;
+            check_expression_types(
+                expression,
+                environment,
+                Some(stored_var.var_type),
+                func_table,
+            )?;
         }
         Statement::If {
             condition,
             body,
             else_block,
         } => {
-            check_expression_types(condition, environment, Some(Type::Bool))?;
-            check_block_types(body, environment, None)?;
+            check_expression_types(condition, environment, Some(Type::Bool), func_table)?;
+            check_block_types(body, environment, None, func_table)?;
             if let Some(else_block) = else_block {
-                check_block_types(else_block, environment, None)?;
+                check_block_types(else_block, environment, None, func_table)?;
             }
         }
         Statement::While { condition, body } => {
-            check_expression_types(condition, environment, Some(Type::Bool))?;
-            check_block_types(body, environment, None)?;
+            check_expression_types(condition, environment, Some(Type::Bool), func_table)?;
+            check_block_types(body, environment, None, func_table)?;
         }
         Statement::For {
             initialiser,
@@ -495,19 +573,19 @@ fn check_statement_types(
         } => {
             environment.push_scope_typed();
             if let Some(initialiser) = initialiser {
-                check_statement_types(initialiser, environment, None)?;
+                check_statement_types(initialiser, environment, None, func_table)?;
             }
             if let Some(condition) = condition {
-                check_expression_types(condition, environment, Some(Type::Bool))?;
+                check_expression_types(condition, environment, Some(Type::Bool), func_table)?;
             }
             if let Some(increment) = increment {
-                check_statement_types(increment, environment, None)?;
+                check_statement_types(increment, environment, None, func_table)?;
             }
-            check_block_types(body, environment, None)?;
+            check_block_types(body, environment, None, func_table)?;
             environment.pop_scope_typed();
         }
         Statement::Scope { body } => {
-            check_block_types(body, environment, None)?;
+            check_block_types(body, environment, None, func_table)?;
         }
         Statement::FunctionDefinition {
             identifier: _,
@@ -523,15 +601,15 @@ fn check_statement_types(
                 };
                 environment.define_typed(param.name.clone(), param_symbol)?;
             }
-            check_block_types(body, environment, Some(*return_type))?;
+            check_block_types(body, environment, Some(*return_type), func_table)?;
             environment.pop_scope_typed();
         }
         Statement::ExpressionStatement { expression } => {
-            check_expression_types(expression, environment, None)?;
+            check_expression_types(expression, environment, None, func_table)?;
         }
         Statement::Return { value } => {
             if let Some(expr) = value {
-                check_expression_types(expr, environment, expected_return_type)?;
+                check_expression_types(expr, environment, expected_return_type, func_table)?;
             }
         }
         Statement::Break | Statement::Continue | Statement::Pass => {}
@@ -544,6 +622,7 @@ fn check_expression_types(
     expression: &mut Expression,
     environment: &SemanticEnvironment,
     expected_type: Option<Type>,
+    func_table: &FunctionTable,
 ) -> Result<Type, AnalysisError> {
     Ok(match expression {
         Expression::Literal(value) => match value {
@@ -593,8 +672,10 @@ fn check_expression_types(
             } else {
                 None
             };
-            let left_type = check_expression_types(left, environment, expected_operand_type)?;
-            let right_type = check_expression_types(right, environment, expected_operand_type)?;
+            let left_type =
+                check_expression_types(left, environment, expected_operand_type, func_table)?;
+            let right_type =
+                check_expression_types(right, environment, expected_operand_type, func_table)?;
             let result_type = check_binary_operator_types(&left_type, operator, &right_type)?;
             if let Some(expected_type) = expected_type {
                 if result_type != expected_type {
@@ -619,22 +700,110 @@ fn check_expression_types(
                 }
             }
 
-            let operand_type = check_expression_types(operand, environment, expected_type)?;
+            let operand_type =
+                check_expression_types(operand, environment, expected_type, func_table)?;
 
             check_unary_operator_types(operator, &operand_type)?
         }
-        Expression::FunctionCall {
+        Expression::ResolvedFunctionCall {
+            function_id,
+            arguments,
+        } => {
+            let function = func_table
+                .get(function_id.clone())
+                .ok_or_else(|| AnalysisError::FunctionNotDefined(function_id.0.to_string()))?;
+            for (parameter_type, argument) in function.signature.parameters.iter().zip(arguments) {
+                let argument_type = check_expression_types(
+                    argument,
+                    environment,
+                    Some(*parameter_type),
+                    func_table,
+                )?;
+                if *parameter_type != argument_type {
+                    return Err(AnalysisError::TypeMismatch(*parameter_type, argument_type));
+                }
+            }
+            if let Some(expected_type) = expected_type {
+                if function.signature.return_type != expected_type {
+                    return Err(AnalysisError::TypeMismatch(
+                        expected_type,
+                        function.signature.return_type,
+                    ));
+                }
+            }
+            function.signature.return_type
+        }
+        Expression::UnresolvedFunctionCall {
             identifier,
             arguments,
         } => {
-            let func_symbol = environment.get_func(identifier)?;
-            for (param, arg) in func_symbol.parameters.iter().zip(arguments) {
-                let arg_type = check_expression_types(arg, environment, Some(param.param_type))?;
-                if param.param_type != arg_type {
-                    return Err(AnalysisError::TypeMismatch(param.param_type, arg_type));
+            let candidates: Vec<_> = func_table
+                .functions_named(identifier)
+                .filter(|function| function.signature.parameters.len() == arguments.len())
+                .collect();
+            let mut first_error = None;
+            let mut selected = None;
+
+            for function in candidates {
+                let mut candidate_arguments = arguments.clone();
+                let result = function
+                    .signature
+                    .parameters
+                    .iter()
+                    .zip(&mut candidate_arguments)
+                    .try_for_each(|(parameter_type, argument)| {
+                        check_expression_types(
+                            argument,
+                            environment,
+                            Some(*parameter_type),
+                            func_table,
+                        )
+                        .and_then(|argument_type| {
+                            if argument_type == *parameter_type {
+                                Ok(())
+                            } else {
+                                Err(AnalysisError::TypeMismatch(*parameter_type, argument_type))
+                            }
+                        })
+                    });
+
+                match result {
+                    Ok(())
+                        if expected_type
+                            .is_none_or(|expected| expected == function.signature.return_type) =>
+                    {
+                        selected = Some(function.id.clone());
+                        break;
+                    }
+                    Ok(()) => {
+                        first_error = Some(AnalysisError::TypeMismatch(
+                            expected_type.expect("guarded by is_none_or"),
+                            function.signature.return_type,
+                        ));
+                    }
+                    Err(error) if first_error.is_none() => first_error = Some(error),
+                    Err(_) => {}
                 }
             }
-            func_symbol.return_type
+
+            let function_id = selected.ok_or_else(|| {
+                first_error.unwrap_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))
+            })?;
+            let function = func_table
+                .get(function_id.clone())
+                .expect("selected function must exist in the function table");
+            for (parameter_type, argument) in
+                function.signature.parameters.iter().zip(&mut *arguments)
+            {
+                check_expression_types(argument, environment, Some(*parameter_type), func_table)?;
+            }
+            let return_type = function.signature.return_type;
+            let arguments = std::mem::take(arguments);
+            *expression = Expression::ResolvedFunctionCall {
+                function_id,
+                arguments,
+            };
+            return_type
         }
     })
 }
@@ -643,10 +812,11 @@ fn check_block_types(
     block: &mut Vec<Statement>,
     environment: &mut SemanticEnvironment,
     expected_return_type: Option<Type>,
+    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
     environment.push_scope_typed();
     for statement in block {
-        check_statement_types(statement, environment, expected_return_type)?;
+        check_statement_types(statement, environment, expected_return_type, func_table)?;
     }
     environment.pop_scope_typed();
     Ok(())
@@ -887,4 +1057,138 @@ fn resolve_float_literal(
     };
 
     Ok((number, target_type))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn integer_literal(value: i64) -> Expression {
+        Expression::Literal(Value::Number(Number::IntegerLiteral(value)))
+    }
+
+    #[test]
+    fn globals_are_available_to_functions_and_calls_are_resolved() {
+        let mut program = Program {
+            statements: vec![
+                Statement::FunctionDefinition {
+                    identifier: "read_global".into(),
+                    parameters: vec![],
+                    body: vec![Statement::Return {
+                        value: Some(Expression::Identifier("answer".into())),
+                    }],
+                    return_type: Type::I32,
+                },
+                Statement::FunctionDefinition {
+                    identifier: "main".into(),
+                    parameters: vec![],
+                    body: vec![Statement::Let {
+                        identifier: "value".into(),
+                        expression: Expression::UnresolvedFunctionCall {
+                            identifier: "read_global".into(),
+                            arguments: vec![],
+                        },
+                        mutable: false,
+                        var_type: Some(Type::I32),
+                    }],
+                    return_type: Type::Unit,
+                },
+                Statement::Let {
+                    identifier: "answer".into(),
+                    expression: integer_literal(42),
+                    mutable: false,
+                    var_type: Some(Type::I32),
+                },
+            ],
+        };
+        let mut function_table = FunctionTable {
+            functions: Vec::new(),
+        };
+        let mut globals = Vec::new();
+
+        collect_functions_and_globals(&program, &mut function_table, &mut globals).unwrap();
+        assert_eq!(function_table.functions.len(), 2);
+        assert_eq!(globals.len(), 1);
+
+        let mut names = SemanticEnvironment::new();
+        resolve_names(&mut program, &mut names, &function_table).unwrap();
+
+        let mut types = SemanticEnvironment::new();
+        check_types(&mut program, &mut types, &function_table).unwrap();
+
+        let Statement::FunctionDefinition { body, .. } = &program.statements[1] else {
+            panic!("expected main function");
+        };
+        let Statement::Let { expression, .. } = &body[0] else {
+            panic!("expected local declaration");
+        };
+        assert!(matches!(
+            expression,
+            Expression::ResolvedFunctionCall { .. }
+        ));
+    }
+
+    #[test]
+    fn overloads_are_selected_using_argument_types() {
+        let mut program = Program {
+            statements: vec![
+                Statement::FunctionDefinition {
+                    identifier: "echo".into(),
+                    parameters: vec![syntax::functions::FunctionParameter {
+                        name: "value".into(),
+                        param_type: Type::String,
+                    }],
+                    body: vec![],
+                    return_type: Type::String,
+                },
+                Statement::FunctionDefinition {
+                    identifier: "echo".into(),
+                    parameters: vec![syntax::functions::FunctionParameter {
+                        name: "value".into(),
+                        param_type: Type::Bool,
+                    }],
+                    body: vec![],
+                    return_type: Type::Bool,
+                },
+                Statement::FunctionDefinition {
+                    identifier: "main".into(),
+                    parameters: vec![],
+                    body: vec![Statement::Let {
+                        identifier: "result".into(),
+                        expression: Expression::UnresolvedFunctionCall {
+                            identifier: "echo".into(),
+                            arguments: vec![Expression::Literal(Value::Bool(true))],
+                        },
+                        mutable: false,
+                        var_type: Some(Type::Bool),
+                    }],
+                    return_type: Type::Unit,
+                },
+            ],
+        };
+        let mut function_table = FunctionTable {
+            functions: Vec::new(),
+        };
+        let mut globals = Vec::new();
+        collect_functions_and_globals(&program, &mut function_table, &mut globals).unwrap();
+
+        let mut names = SemanticEnvironment::new();
+        resolve_names(&mut program, &mut names, &function_table).unwrap();
+        let mut types = SemanticEnvironment::new();
+        check_types(&mut program, &mut types, &function_table).unwrap();
+
+        let Statement::FunctionDefinition { body, .. } = &program.statements[2] else {
+            panic!("expected main function");
+        };
+        let Statement::Let { expression, .. } = &body[0] else {
+            panic!("expected local declaration");
+        };
+        assert!(matches!(
+            expression,
+            Expression::ResolvedFunctionCall {
+                function_id: FunctionId(1),
+                ..
+            }
+        ));
+    }
 }
