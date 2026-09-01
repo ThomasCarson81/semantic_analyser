@@ -1318,11 +1318,11 @@ mod tests {
         check_types(&mut program, &mut types, &function_table).unwrap();
         let checked_program = build_checked_program(&program, &function_table).unwrap();
 
-        assert_eq!(checked_program.main_function_id, FunctionId(2));
-        assert_eq!(checked_program.function_table.functions.len(), 3);
+        assert_eq!(checked_program.main_function_id, FunctionId(12));
+        assert_eq!(checked_program.function_table.functions.len(), 13);
         let Oxide(FunctionBody { statements: body }) = &checked_program
             .function_table
-            .get(FunctionId(2))
+            .get(FunctionId(12))
             .expect("main must be present")
             .implementation
         else {
