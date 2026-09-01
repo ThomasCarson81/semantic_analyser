@@ -6,10 +6,11 @@ use std::{
 use syntax::{
     ast::{Expression, Program, Statement, TokenType},
     functions::{
-        Function, FunctionBody, FunctionId, FunctionImplementation::Oxide, FunctionSignature,
-        FunctionTable,
+        CheckedProgram, Function, FunctionBody, FunctionId, FunctionImplementation,
+        FunctionImplementation::Oxide, FunctionSignature, FunctionTable,
     },
     semantics::Symbol,
+    stdlib::builtin_functions,
     types::{Number, Type, Value},
 };
 
@@ -115,7 +116,7 @@ fn main() {
     };
     let mut environment = SemanticEnvironment::new();
     let mut function_table = FunctionTable {
-        functions: Vec::new(),
+        functions: builtin_functions(),
     };
     let mut global_table: Vec<Statement> = Vec::new();
     match collect_functions_and_globals(&program, &mut function_table, &mut global_table) {
@@ -226,12 +227,14 @@ fn main() {
         }
     }
 
+    let checked_program = build_checked_program(&program, &function_table)
+        .expect("function collection must produce a complete checked program");
+
     // context check for control flow
 
     if args.len() == 3 {
-        output_checked_ast(&program, &args[2]);
+        output_checked_program(&checked_program, &args[2]);
     }
-    // output function table??
 }
 
 fn get_ast_from_file(file_path: &str) -> Result<Program, AnalysisError> {
@@ -242,7 +245,7 @@ fn get_ast_from_file(file_path: &str) -> Result<Program, AnalysisError> {
     Ok(program)
 }
 
-fn output_checked_ast(program: &Program, file_path: &str) {
+fn output_checked_program(program: &CheckedProgram, file_path: &str) {
     let json = serde_json::to_string_pretty(program);
     match json {
         Ok(json) => {
@@ -253,6 +256,85 @@ fn output_checked_ast(program: &Program, file_path: &str) {
             std::process::exit(1);
         }
     }
+}
+
+fn build_checked_program(
+    program: &Program,
+    collected_functions: &FunctionTable,
+) -> Result<CheckedProgram, AnalysisError> {
+    let globals = program
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::Let { .. } => Some(statement.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut functions: Vec<Function> = collected_functions
+        .functions
+        .iter()
+        .filter(|function| matches!(&function.implementation, FunctionImplementation::Builtin(_)))
+        .cloned()
+        .collect();
+    let oxide_functions = program
+        .statements
+        .iter()
+        .filter_map(|statement| match statement {
+            Statement::FunctionDefinition {
+                identifier,
+                parameters,
+                body,
+                return_type,
+            } => Some((identifier, parameters, body, return_type)),
+            _ => None,
+        })
+        .map(|(identifier, parameters, body, return_type)| {
+            let signature = FunctionSignature {
+                name: identifier.clone(),
+                parameters: parameters
+                    .iter()
+                    .map(|parameter| parameter.param_type)
+                    .collect(),
+                return_type: *return_type,
+            };
+            let collected_function = collected_functions
+                .functions
+                .iter()
+                .find(|function| function.signature == signature)
+                .ok_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))?;
+
+            Ok(Function {
+                id: collected_function.id.clone(),
+                signature,
+                parameters: parameters.clone(),
+                implementation: Oxide(FunctionBody {
+                    statements: body.clone(),
+                }),
+            })
+        })
+        .collect::<Result<Vec<_>, AnalysisError>>()?;
+    functions.extend(oxide_functions);
+    let function_table = FunctionTable { functions };
+    let main_function_id = function_table
+        .functions
+        .iter()
+        .find(|function| {
+            function.signature
+                == (FunctionSignature {
+                    name: "main".into(),
+                    parameters: vec![],
+                    return_type: Type::Unit,
+                })
+        })
+        .map(|function| function.id.clone())
+        .ok_or(AnalysisError::NoMainFunction)?;
+
+    Ok(CheckedProgram {
+        function_table,
+        globals,
+        main_function_id,
+    })
 }
 
 fn collect_functions_and_globals(
@@ -286,6 +368,7 @@ fn collect_functions_and_globals(
                     id: FunctionId(func_table.functions.len()),
                     implementation: Oxide(function_body),
                     signature: function_signature,
+                    parameters: parameters.clone(),
                 };
                 func_table.functions.push(func);
             }
@@ -451,13 +534,21 @@ fn resolve_expression(
             identifier,
             arguments,
         } => {
-            let mut candidates = func_table
-                .functions_named(identifier)
-                .filter(|function| function.signature.parameters.len() == arguments.len());
-            let parameter_count = candidates
-                .next()
-                .map(|function| function.signature.parameters.len())
+            let overloads: Vec<_> = func_table.functions_named(identifier).collect();
+            let first_overload = overloads
+                .first()
                 .ok_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))?;
+            let parameter_count = first_overload.signature.parameters.len();
+            if !overloads
+                .iter()
+                .any(|function| function.signature.parameters.len() == arguments.len())
+            {
+                return Err(AnalysisError::FunctionArgumentCountMismatch(
+                    identifier.clone(),
+                    parameter_count,
+                    arguments.len(),
+                ));
+            }
             for argument in &mut *arguments {
                 resolve_expression(argument, environment, func_table)?;
             }
@@ -1115,9 +1206,16 @@ mod tests {
 
         let mut types = SemanticEnvironment::new();
         check_types(&mut program, &mut types, &function_table).unwrap();
+        let checked_program = build_checked_program(&program, &function_table).unwrap();
 
-        let Statement::FunctionDefinition { body, .. } = &program.statements[1] else {
-            panic!("expected main function");
+        assert_eq!(checked_program.globals.len(), 1);
+        assert_eq!(checked_program.main_function_id, FunctionId(1));
+        let main = checked_program
+            .function_table
+            .get(checked_program.main_function_id.clone())
+            .expect("main function must be in the checked function table");
+        let Oxide(FunctionBody { statements: body }) = &main.implementation else {
+            panic!("main must have an Oxide body");
         };
         let Statement::Let { expression, .. } = &body[0] else {
             panic!("expected local declaration");
@@ -1126,6 +1224,7 @@ mod tests {
             expression,
             Expression::ResolvedFunctionCall { .. }
         ));
+        assert!(serde_json::to_string(&checked_program).is_ok());
     }
 
     #[test]
@@ -1182,6 +1281,55 @@ mod tests {
         };
         let Statement::Let { expression, .. } = &body[0] else {
             panic!("expected local declaration");
+        };
+        assert!(matches!(
+            expression,
+            Expression::ResolvedFunctionCall {
+                function_id: FunctionId(1),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn standard_library_functions_are_resolved_and_emitted() {
+        let mut program = Program {
+            statements: vec![Statement::FunctionDefinition {
+                identifier: "main".into(),
+                parameters: vec![],
+                body: vec![Statement::ExpressionStatement {
+                    expression: Expression::UnresolvedFunctionCall {
+                        identifier: "println".into(),
+                        arguments: vec![Expression::Literal(Value::String("hello".into()))],
+                    },
+                }],
+                return_type: Type::Unit,
+            }],
+        };
+        let mut function_table = FunctionTable {
+            functions: builtin_functions(),
+        };
+        let mut globals = Vec::new();
+        collect_functions_and_globals(&program, &mut function_table, &mut globals).unwrap();
+
+        let mut names = SemanticEnvironment::new();
+        resolve_names(&mut program, &mut names, &function_table).unwrap();
+        let mut types = SemanticEnvironment::new();
+        check_types(&mut program, &mut types, &function_table).unwrap();
+        let checked_program = build_checked_program(&program, &function_table).unwrap();
+
+        assert_eq!(checked_program.main_function_id, FunctionId(2));
+        assert_eq!(checked_program.function_table.functions.len(), 3);
+        let Oxide(FunctionBody { statements: body }) = &checked_program
+            .function_table
+            .get(FunctionId(2))
+            .expect("main must be present")
+            .implementation
+        else {
+            panic!("main must have an Oxide body");
+        };
+        let Statement::ExpressionStatement { expression } = &body[0] else {
+            panic!("expected println call");
         };
         assert!(matches!(
             expression,
