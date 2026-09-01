@@ -552,14 +552,6 @@ fn resolve_expression(
             for argument in &mut *arguments {
                 resolve_expression(argument, environment, func_table)?;
             }
-            let num_args = arguments.len();
-            if num_args != parameter_count {
-                return Err(AnalysisError::FunctionArgumentCountMismatch(
-                    identifier.clone(),
-                    parameter_count,
-                    num_args,
-                ));
-            }
             // Overload selection requires argument types, so retain the
             // unresolved node until the type-checking pass.
         }
@@ -1297,12 +1289,23 @@ mod tests {
             statements: vec![Statement::FunctionDefinition {
                 identifier: "main".into(),
                 parameters: vec![],
-                body: vec![Statement::ExpressionStatement {
-                    expression: Expression::UnresolvedFunctionCall {
-                        identifier: "println".into(),
-                        arguments: vec![Expression::Literal(Value::String("hello".into()))],
+                body: vec![
+                    Statement::ExpressionStatement {
+                        expression: Expression::UnresolvedFunctionCall {
+                            identifier: "println".into(),
+                            arguments: vec![Expression::Literal(Value::String("hello".into()))],
+                        },
                     },
-                }],
+                    Statement::Let {
+                        identifier: "name".into(),
+                        expression: Expression::UnresolvedFunctionCall {
+                            identifier: "input".into(),
+                            arguments: vec![Expression::Literal(Value::String("Name: ".into()))],
+                        },
+                        mutable: false,
+                        var_type: Some(Type::String),
+                    },
+                ],
                 return_type: Type::Unit,
             }],
         };
@@ -1318,11 +1321,11 @@ mod tests {
         check_types(&mut program, &mut types, &function_table).unwrap();
         let checked_program = build_checked_program(&program, &function_table).unwrap();
 
-        assert_eq!(checked_program.main_function_id, FunctionId(12));
-        assert_eq!(checked_program.function_table.functions.len(), 13);
+        assert_eq!(checked_program.main_function_id, FunctionId(14));
+        assert_eq!(checked_program.function_table.functions.len(), 15);
         let Oxide(FunctionBody { statements: body }) = &checked_program
             .function_table
-            .get(FunctionId(12))
+            .get(FunctionId(14))
             .expect("main must be present")
             .implementation
         else {
@@ -1335,6 +1338,16 @@ mod tests {
             expression,
             Expression::ResolvedFunctionCall {
                 function_id: FunctionId(1),
+                ..
+            }
+        ));
+        let Statement::Let { expression, .. } = &body[1] else {
+            panic!("expected input declaration");
+        };
+        assert!(matches!(
+            expression,
+            Expression::ResolvedFunctionCall {
+                function_id: FunctionId(13),
                 ..
             }
         ));
