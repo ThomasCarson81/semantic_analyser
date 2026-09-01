@@ -1,6 +1,7 @@
 mod collection;
 mod name_resolution;
 mod type_checking;
+use collection::collect_functions_and_globals;
 use name_resolution::resolve_names;
 use std::{
     collections::{HashMap, HashSet},
@@ -123,11 +124,7 @@ fn main() {
         functions: builtin_functions(),
     };
     let mut global_table: Vec<Statement> = Vec::new();
-    match collection::collect_functions_and_globals(
-        &program,
-        &mut function_table,
-        &mut global_table,
-    ) {
+    match collect_functions_and_globals(&program, &mut function_table, &mut global_table) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -192,6 +189,7 @@ fn main() {
     // clear name resolution data
     environment.scopes.clear();
     environment.push_scope();
+
     match check_types(&mut program, &mut environment, &function_table) {
         Ok(_) => {}
         Err(e) => {
@@ -235,10 +233,10 @@ fn main() {
         }
     }
 
+    // context check for control flow
+
     let checked_program = build_checked_program(&program, &function_table)
         .expect("function collection must produce a complete checked program");
-
-    // context check for control flow
 
     if args.len() == 3 {
         output_checked_program(&checked_program, &args[2]);
