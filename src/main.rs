@@ -1,7 +1,9 @@
 mod collection;
+mod context_checking;
 mod name_resolution;
 mod type_checking;
 use collection::collect_functions_and_globals;
+use context_checking::check_contexts;
 use name_resolution::resolve_names;
 use std::{
     collections::{HashMap, HashSet},
@@ -35,6 +37,7 @@ enum AnalysisError {
     TopLevelStatement,
     NoMainFunction,
     CouldNotReadFile(String),
+    InvalidContext(String),
 }
 
 struct SemanticEnvironment {
@@ -46,7 +49,6 @@ impl SemanticEnvironment {
         Self {
             scopes: vec![HashSet::new()],
             scopes_typed: vec![HashMap::new()],
-            // functions: HashMap::new(),
         }
     }
 
@@ -225,7 +227,8 @@ fn main() {
                 | AnalysisError::UndeclaredVariable(_)
                 | AnalysisError::TopLevelStatement
                 | AnalysisError::NoMainFunction
-                | AnalysisError::CouldNotReadFile(_) => unreachable!(
+                | AnalysisError::CouldNotReadFile(_)
+                | AnalysisError::InvalidContext(_) => unreachable!(
                     "Semantic Analyser encountered an unexpected error when checking types."
                 ),
             }
@@ -234,6 +237,19 @@ fn main() {
     }
 
     // context check for control flow
+
+    match check_contexts(&function_table) {
+        Ok(_) => {}
+        Err(e) => {
+            match e {
+                AnalysisError::InvalidContext(message) => {
+                    println!("Invalid context: {}", message);
+                }
+                _ => unreachable!("Unexpected error in context checking."),
+            }
+            std::process::exit(1);
+        }
+    }
 
     let checked_program = build_checked_program(&program, &function_table)
         .expect("function collection must produce a complete checked program");
