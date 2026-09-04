@@ -37,6 +37,7 @@ enum AnalysisError {
     TopLevelStatement,
     NoMainFunction,
     CouldNotReadFile(String),
+    InvalidGlobalDeclaration(String),
     InvalidContext(String),
 }
 
@@ -143,6 +144,9 @@ fn main() {
                 AnalysisError::NoMainFunction => {
                     println!("Please provide a function called 'main' with no parameters.")
                 }
+                AnalysisError::InvalidGlobalDeclaration(message) => {
+                    println!("Invalid global declaration: {message}");
+                }
                 _ => unreachable!(
                     "Semantic Analyser encountered an unexpected error when collecting functions."
                 ),
@@ -219,7 +223,8 @@ fn main() {
                 AnalysisError::IntegerLiteralOutOfRange(value, target_type) => {
                     println!("Value {value} is out of range of target type '{target_type}'")
                 }
-                AnalysisError::OutOfScopes
+                AnalysisError::InvalidGlobalDeclaration(_)
+                | AnalysisError::OutOfScopes
                 | AnalysisError::FunctionAlreadyDefined(_)
                 | AnalysisError::FunctionNotDefined(_)
                 | AnalysisError::FunctionArgumentCountMismatch(_, _, _)

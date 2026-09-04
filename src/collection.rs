@@ -1,6 +1,6 @@
 use crate::AnalysisError;
 use syntax::{
-    ast::{Program, Statement},
+    ast::{Expression, Program, Statement},
     functions::{
         Function, FunctionBody, FunctionId, FunctionImplementation, FunctionSignature,
         FunctionTable,
@@ -43,7 +43,20 @@ pub fn collect_functions_and_globals(
                 };
                 func_table.functions.push(func);
             }
-            Statement::Let { .. } => {
+            Statement::Let { expression, .. } => {
+                match expression {
+                    Expression::Literal(_) => {}
+                    Expression::Identifier(_)
+                    | Expression::BinaryOp { .. }
+                    | Expression::UnaryOp { .. }
+                    | Expression::UnresolvedFunctionCall { .. }
+                    | Expression::ResolvedFunctionCall { .. } => {
+                        return Err(AnalysisError::InvalidGlobalDeclaration(
+                            "Global variables can only be initialized with constant expressions."
+                                .into(),
+                        ));
+                    }
+                }
                 global_table.push(statement.clone());
             }
             _ => return Err(AnalysisError::TopLevelStatement),
