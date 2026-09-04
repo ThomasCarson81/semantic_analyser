@@ -44,6 +44,7 @@ pub fn check_statement_types(
                 mutable: *mutable,
                 var_type: expr_type,
             };
+            *var_type = Some(expr_type);
             environment.define_typed(identifier.clone(), symbol)?;
         }
         Statement::Assignment {
