@@ -135,6 +135,7 @@ pub fn resolve_expression(
             left,
             operator: _,
             right,
+            inferred_type: _,
         } => {
             resolve_expression(left, environment, func_table)?;
             resolve_expression(right, environment, func_table)?;
@@ -142,6 +143,7 @@ pub fn resolve_expression(
         Expression::UnaryOp {
             operator: _,
             operand,
+            inferred_type: _,
         } => {
             resolve_expression(operand, environment, func_table)?;
         }

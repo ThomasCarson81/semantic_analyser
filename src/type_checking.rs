@@ -180,6 +180,7 @@ pub fn check_expression_types(
             left,
             operator,
             right,
+            inferred_type,
         } => {
             let expected_operand_type = if binary_operator_uses_operand_type(operator) {
                 expected_type
@@ -196,9 +197,14 @@ pub fn check_expression_types(
                     return Err(AnalysisError::TypeMismatch(expected_type, result_type));
                 }
             }
+            *inferred_type = Some(result_type);
             result_type
         }
-        Expression::UnaryOp { operator, operand } => {
+        Expression::UnaryOp {
+            operator,
+            operand,
+            inferred_type,
+        } => {
             if *operator == TokenType::Minus {
                 if let Expression::Literal(Value::Number(Number::IntegerLiteral(value))) =
                     operand.as_mut()
@@ -217,7 +223,8 @@ pub fn check_expression_types(
             let operand_type =
                 check_expression_types(operand, environment, expected_type, func_table)?;
 
-            check_unary_operator_types(operator, &operand_type)?
+            *inferred_type = Some(check_unary_operator_types(operator, &operand_type)?);
+            operand_type
         }
         Expression::ResolvedFunctionCall {
             function_id,
