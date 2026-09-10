@@ -197,7 +197,7 @@ pub fn check_expression_types(
                     return Err(AnalysisError::TypeMismatch(expected_type, result_type));
                 }
             }
-            *inferred_type = Some(result_type);
+            *inferred_type = Some(left_type);
             result_type
         }
         Expression::UnaryOp {
