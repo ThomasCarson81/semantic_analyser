@@ -231,7 +231,7 @@ pub fn check_expression_types(
             arguments,
         } => {
             let function = func_table
-                .get(function_id.clone())
+                .get(&function_id)
                 .ok_or_else(|| AnalysisError::FunctionNotDefined(function_id.0.to_string()))?;
             for (parameter_type, argument) in function.signature.parameters.iter().zip(arguments) {
                 let argument_type = check_expression_types(
@@ -311,7 +311,7 @@ pub fn check_expression_types(
                 first_error.unwrap_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))
             })?;
             let function = func_table
-                .get(function_id.clone())
+                .get(&function_id)
                 .expect("selected function must exist in the function table");
             for (parameter_type, argument) in
                 function.signature.parameters.iter().zip(&mut *arguments)
