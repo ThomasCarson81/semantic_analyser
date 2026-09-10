@@ -215,7 +215,7 @@ pub fn check_expression_types(
                         resolve_integer_literal(value, expected_type)?;
 
                     *operand = Box::new(Expression::Literal(Value::Number(resolved_number)));
-
+                    *inferred_type = Some(resolved_type);
                     return Ok(resolved_type);
                 }
             }
