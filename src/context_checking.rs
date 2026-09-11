@@ -1,7 +1,9 @@
 use crate::AnalysisError;
+
 use syntax::{
     ast::Statement,
     functions::{Function, FunctionImplementation, FunctionTable},
+    types::ControlFlow,
 };
 
 pub fn check_contexts(func_table: &FunctionTable) -> Result<(), AnalysisError> {
@@ -19,13 +21,26 @@ fn check_function_context(function: &Function) -> Result<(), AnalysisError> {
 }
 
 fn check_block_context(statements: &[Statement], in_loop: bool) -> Result<(), AnalysisError> {
-    for statement in statements {
-        check_statement_context(statement, in_loop)?;
+    let mut statements_iter = statements.iter().peekable();
+    while let Some(statement) = statements_iter.next() {
+        match check_statement_context(statement, in_loop)? {
+            ControlFlow::Normal => {}
+            _ => {
+                if !statements_iter.peek().is_none() {
+                    return Err(AnalysisError::InvalidContext(
+                        "Statements not allowed after control flow statement.".to_string(),
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }
 
-fn check_statement_context(statement: &Statement, in_loop: bool) -> Result<(), AnalysisError> {
+fn check_statement_context(
+    statement: &Statement,
+    in_loop: bool,
+) -> Result<ControlFlow, AnalysisError> {
     match statement {
         Statement::While { body, .. } => {
             check_block_context(body, true)?;
@@ -65,9 +80,17 @@ fn check_statement_context(statement: &Statement, in_loop: bool) -> Result<(), A
                     "Break or Continue statement found outside of a loop.".to_string(),
                 ));
             }
+            if matches!(statement, Statement::Break) {
+                return Ok(ControlFlow::Break);
+            } else {
+                return Ok(ControlFlow::Continue);
+            }
         }
-
+        Statement::Return { .. } => {
+            // return value doesn't matter
+            return Ok(ControlFlow::Return(syntax::types::Value::Unit));
+        }
         _ => {}
     }
-    Ok(())
+    Ok(ControlFlow::Normal)
 }
