@@ -3,7 +3,7 @@ use crate::AnalysisError;
 use syntax::{
     ast::Statement,
     functions::{Function, FunctionImplementation, FunctionTable},
-    types::ControlFlow,
+    types::{ControlFlow, Type},
 };
 
 pub fn check_contexts(func_table: &FunctionTable) -> Result<(), AnalysisError> {
@@ -17,15 +17,30 @@ fn check_function_context(function: &Function) -> Result<(), AnalysisError> {
     let FunctionImplementation::Oxide(body) = &function.implementation else {
         return Ok(());
     };
-    check_block_context(&body.statements, false)
+    let returns = check_block_context(&body.statements, false);
+    match returns {
+        Ok(ret) => {
+            if function.signature.return_type != Type::Unit && !ret {
+                return Err(AnalysisError::InvalidContext(
+                    "Non unit function must return a value in all code paths.".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    }
 }
 
-fn check_block_context(statements: &[Statement], in_loop: bool) -> Result<(), AnalysisError> {
+fn check_block_context(statements: &[Statement], in_loop: bool) -> Result<bool, AnalysisError> {
+    let mut returns = false;
     let mut statements_iter = statements.iter().peekable();
     while let Some(statement) = statements_iter.next() {
         match check_statement_context(statement, in_loop)? {
             ControlFlow::Normal => {}
-            _ => {
+            other => {
+                if matches!(other, ControlFlow::Return(_)) {
+                    returns = true;
+                }
                 if !statements_iter.peek().is_none() {
                     return Err(AnalysisError::InvalidContext(
                         "Statements not allowed after control flow statement.".to_string(),
@@ -34,7 +49,7 @@ fn check_block_context(statements: &[Statement], in_loop: bool) -> Result<(), An
             }
         }
     }
-    Ok(())
+    Ok(returns)
 }
 
 fn check_statement_context(
