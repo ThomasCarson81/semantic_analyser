@@ -374,6 +374,7 @@ pub fn check_binary_operator_types(
         TokenType::Minus => check_number_only_bin_op_types(left, operator, right),
         TokenType::Asterisk => check_number_only_bin_op_types(left, operator, right),
         TokenType::Slash => check_number_only_bin_op_types(left, operator, right),
+        TokenType::Modulo => check_number_only_bin_op_types(left, operator, right),
         TokenType::GreaterThan => check_order_comparison_op_types(left, operator, right),
         TokenType::LessThan => check_order_comparison_op_types(left, operator, right),
         TokenType::GreaterThanOrEqualTo => check_order_comparison_op_types(left, operator, right),
@@ -566,7 +567,8 @@ pub fn binary_operator_uses_operand_type(operator: &TokenType) -> bool {
         | TokenType::Minus
         | TokenType::Asterisk
         | TokenType::Slash
-        | TokenType::Walrus => true,
+        | TokenType::Walrus
+        | TokenType::Modulo => true,
         TokenType::GreaterThan
         | TokenType::LessThan
         | TokenType::GreaterThanOrEqualTo
