@@ -190,8 +190,12 @@ pub fn check_expression_types(
             };
             let left_type =
                 check_expression_types(left, environment, expected_operand_type, func_table)?;
-            let right_type =
-                check_expression_types(right, environment, expected_operand_type, func_table)?;
+            let right_type = check_expression_types(
+                right,
+                environment,
+                Some(expected_operand_type.unwrap_or(left_type)),
+                func_table,
+            )?;
             let result_type = check_binary_operator_types(
                 &left_type,
                 operator,
@@ -623,7 +627,6 @@ fn resolve_integer_literal(
             return Err(AnalysisError::TypeMismatch(target_type, Type::I32));
         }
     };
-
     Ok((number, target_type))
 }
 
