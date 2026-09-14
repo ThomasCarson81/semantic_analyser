@@ -51,9 +51,7 @@ pub fn check_statement_types(
             identifier,
             expression,
         } => {
-            let stored_var = environment
-                .get_typed(identifier)
-                .ok_or(AnalysisError::UndeclaredVariable(identifier.clone()))?;
+            let stored_var = environment.get_typed(identifier);
             if !stored_var.mutable {
                 return Err(AnalysisError::CannotMutate(identifier.clone()));
             }
@@ -170,12 +168,7 @@ pub fn check_expression_types(
                 Number::F64(_) => Type::F64,
             },
         },
-        Expression::Identifier(name) => {
-            environment
-                .get_typed(name)
-                .ok_or(AnalysisError::UndeclaredVariable(name.clone()))?
-                .var_type
-        }
+        Expression::Identifier(name) => environment.get_typed(name).var_type,
         Expression::BinaryOp {
             left,
             operator,
@@ -187,11 +180,25 @@ pub fn check_expression_types(
             } else {
                 None
             };
+            let left_mutable = match left.as_ref() {
+                Expression::Identifier(ident) => environment.get_typed(ident).mutable,
+                _ => false,
+            };
+            let left_name = match left.as_ref() {
+                Expression::Identifier(ident) => Some(ident.clone()),
+                _ => None,
+            };
             let left_type =
                 check_expression_types(left, environment, expected_operand_type, func_table)?;
             let right_type =
                 check_expression_types(right, environment, expected_operand_type, func_table)?;
-            let result_type = check_binary_operator_types(&left_type, operator, &right_type)?;
+            let result_type = check_binary_operator_types(
+                &left_type,
+                operator,
+                &right_type,
+                left_mutable,
+                left_name,
+            )?;
             if let Some(expected_type) = expected_type {
                 if result_type != expected_type {
                     return Err(AnalysisError::TypeMismatch(expected_type, result_type));
@@ -219,11 +226,23 @@ pub fn check_expression_types(
                     return Ok(resolved_type);
                 }
             }
-
+            let operand_mutable = match operand.as_ref() {
+                Expression::Identifier(ident) => environment.get_typed(ident).mutable,
+                _ => false,
+            };
+            let operand_name = match operand.as_ref() {
+                Expression::Identifier(ident) => Some(ident.clone()),
+                _ => None,
+            };
             let operand_type =
                 check_expression_types(operand, environment, expected_type, func_table)?;
 
-            *inferred_type = Some(check_unary_operator_types(operator, &operand_type)?);
+            *inferred_type = Some(check_unary_operator_types(
+                operator,
+                &operand_type,
+                operand_mutable,
+                operand_name,
+            )?);
             operand_type
         }
         Expression::ResolvedFunctionCall {
@@ -347,6 +366,8 @@ pub fn check_binary_operator_types(
     left: &Type,
     operator: &TokenType,
     right: &Type,
+    left_mutable: bool,
+    left_name: Option<String>,
 ) -> Result<Type, AnalysisError> {
     match operator {
         TokenType::Plus => check_plus_types(left, operator, right),
@@ -361,6 +382,14 @@ pub fn check_binary_operator_types(
         TokenType::NotEqualTo => check_equivalence_comparison_op_types(left, operator, right),
         TokenType::LogicalAnd => check_logical_bin_op_types(left, operator, right),
         TokenType::LogicalOr => check_logical_bin_op_types(left, operator, right),
+        TokenType::Walrus => {
+            if !left_mutable {
+                return Err(AnalysisError::CannotMutate(
+                    left_name.expect("missing left operand name"),
+                ));
+            }
+            check_walrus_types(left, operator, right)
+        }
         _ => unreachable!(
             "Invalid binary operator during type checking: '{}'.",
             operator
@@ -462,13 +491,40 @@ pub fn check_logical_bin_op_types(
     }
 }
 
+pub fn check_walrus_types(
+    left: &Type,
+    operator: &TokenType,
+    right: &Type,
+) -> Result<Type, AnalysisError> {
+    if left != right {
+        return Err(AnalysisError::BinOpTypeError(*operator, *left, *right));
+    }
+    Ok(*left)
+}
+
 pub fn check_unary_operator_types(
     operator: &TokenType,
     operand: &Type,
+    operand_mutable: bool,
+    operand_name: Option<String>,
 ) -> Result<Type, AnalysisError> {
     match operator {
-        TokenType::Increment => check_number_only_un_op_types(operator, operand),
-        TokenType::Decrement => check_number_only_un_op_types(operator, operand),
+        TokenType::Increment => {
+            if !operand_mutable {
+                return Err(AnalysisError::CannotMutate(String::from(
+                    operand_name.expect("missing operand name in unary op mut check"),
+                )));
+            }
+            check_number_only_un_op_types(operator, operand)
+        }
+        TokenType::Decrement => {
+            if !operand_mutable {
+                return Err(AnalysisError::CannotMutate(String::from(
+                    operand_name.expect("missing operand name in unary op mut check"),
+                )));
+            }
+            check_number_only_un_op_types(operator, operand)
+        }
         TokenType::Not => check_bool_only_un_op_types(operator, operand),
         TokenType::Minus => check_number_only_un_op_types(operator, operand),
         _ => unreachable!("Invalid unary operator during type checking: {}", operator),
@@ -506,7 +562,11 @@ pub fn check_bool_only_un_op_types(
 
 pub fn binary_operator_uses_operand_type(operator: &TokenType) -> bool {
     match operator {
-        TokenType::Plus | TokenType::Minus | TokenType::Asterisk | TokenType::Slash => true,
+        TokenType::Plus
+        | TokenType::Minus
+        | TokenType::Asterisk
+        | TokenType::Slash
+        | TokenType::Walrus => true,
         TokenType::GreaterThan
         | TokenType::LessThan
         | TokenType::GreaterThanOrEqualTo

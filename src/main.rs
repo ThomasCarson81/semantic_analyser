@@ -96,11 +96,12 @@ impl SemanticEnvironment {
         self.scopes.iter().rev().any(|scope| scope.contains(name))
     }
 
-    fn get_typed(&self, name: &str) -> Option<&Symbol> {
+    fn get_typed(&self, name: &str) -> &Symbol {
         self.scopes_typed
             .iter()
             .rev()
             .find_map(|scope| scope.get(name))
+            .expect(format!("missing symbol {}", name).as_str())
     }
 }
 
