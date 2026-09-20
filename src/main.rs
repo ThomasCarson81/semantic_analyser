@@ -10,13 +10,14 @@ use std::{
     env, fs,
 };
 use syntax::{
-    ast::{Program, Statement, TokenType},
+    ast::{Program, Statement},
     functions::{
         CheckedProgram, Function, FunctionBody, FunctionImplementation,
         FunctionImplementation::Oxide, FunctionSignature, FunctionTable,
     },
     semantics::Symbol,
     stdlib::builtin_functions,
+    tokens::TokenType,
     types::Type,
 };
 use type_checking::check_types;

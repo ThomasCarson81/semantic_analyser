@@ -1,7 +1,8 @@
 use syntax::{
-    ast::{Expression, Program, Statement, TokenType},
+    ast::{Expression, Program, Statement},
     functions::FunctionTable,
     semantics::Symbol,
+    tokens::TokenType,
     types::{Number, Type, Value},
 };
 
