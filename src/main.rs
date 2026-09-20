@@ -322,9 +322,9 @@ fn build_checked_program(
                 name: identifier.clone(),
                 parameters: parameters
                     .iter()
-                    .map(|parameter| parameter.param_type)
+                    .map(|parameter| parameter.param_type.clone())
                     .collect(),
-                return_type: *return_type,
+                return_type: return_type.clone(),
             };
             let collected_function = collected_functions
                 .functions

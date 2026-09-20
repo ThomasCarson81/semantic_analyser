@@ -39,10 +39,11 @@ pub fn check_statement_types(
             mutable,
             var_type,
         } => {
-            let expr_type = check_expression_types(expression, environment, *var_type, func_table)?;
+            let expr_type =
+                check_expression_types(expression, environment, var_type.clone(), func_table)?;
             let symbol = Symbol {
                 mutable: *mutable,
-                var_type: expr_type,
+                var_type: expr_type.clone(),
             };
             *var_type = Some(expr_type);
             environment.define_typed(identifier.clone(), symbol)?;
@@ -58,7 +59,7 @@ pub fn check_statement_types(
             check_expression_types(
                 expression,
                 environment,
-                Some(stored_var.var_type),
+                Some(stored_var.var_type.clone()),
                 func_table,
             )?;
         }
@@ -109,11 +110,11 @@ pub fn check_statement_types(
             for param in parameters {
                 let param_symbol = Symbol {
                     mutable: false,
-                    var_type: param.param_type,
+                    var_type: param.param_type.clone(),
                 };
                 environment.define_typed(param.name.clone(), param_symbol)?;
             }
-            check_block_types(body, environment, Some(*return_type), func_table)?;
+            check_block_types(body, environment, Some(return_type.clone()), func_table)?;
             environment.pop_scope_typed();
         }
         Statement::ExpressionStatement { expression } => {
@@ -168,7 +169,7 @@ pub fn check_expression_types(
                 Number::F64(_) => Type::F64,
             },
         },
-        Expression::Identifier(name) => environment.get_typed(name).var_type,
+        Expression::Identifier(name) => environment.get_typed(name).var_type.clone(),
         Expression::BinaryOp {
             left,
             operator,
@@ -176,7 +177,7 @@ pub fn check_expression_types(
             inferred_type,
         } => {
             let expected_operand_type = if binary_operator_uses_operand_type(operator) {
-                expected_type
+                expected_type.clone()
             } else {
                 None
             };
@@ -188,12 +189,16 @@ pub fn check_expression_types(
                 Expression::Identifier(ident) => Some(ident.clone()),
                 _ => None,
             };
-            let left_type =
-                check_expression_types(left, environment, expected_operand_type, func_table)?;
+            let left_type = check_expression_types(
+                left,
+                environment,
+                expected_operand_type.clone(),
+                func_table,
+            )?;
             let right_type = check_expression_types(
                 right,
                 environment,
-                Some(expected_operand_type.unwrap_or(left_type)),
+                Some(expected_operand_type.unwrap_or(left_type.clone())),
                 func_table,
             )?;
             let result_type = check_binary_operator_types(
@@ -226,7 +231,7 @@ pub fn check_expression_types(
                         resolve_integer_literal(value, expected_type)?;
 
                     *operand = Box::new(Expression::Literal(Value::Number(resolved_number)));
-                    *inferred_type = Some(resolved_type);
+                    *inferred_type = Some(resolved_type.clone());
                     return Ok(resolved_type);
                 }
             }
@@ -260,22 +265,25 @@ pub fn check_expression_types(
                 let argument_type = check_expression_types(
                     argument,
                     environment,
-                    Some(*parameter_type),
+                    Some(parameter_type.clone()),
                     func_table,
                 )?;
                 if *parameter_type != argument_type {
-                    return Err(AnalysisError::TypeMismatch(*parameter_type, argument_type));
+                    return Err(AnalysisError::TypeMismatch(
+                        parameter_type.clone(),
+                        argument_type,
+                    ));
                 }
             }
             if let Some(expected_type) = expected_type {
                 if function.signature.return_type != expected_type {
                     return Err(AnalysisError::TypeMismatch(
                         expected_type,
-                        function.signature.return_type,
+                        function.signature.return_type.clone(),
                     ));
                 }
             }
-            function.signature.return_type
+            function.signature.return_type.clone()
         }
         Expression::UnresolvedFunctionCall {
             identifier,
@@ -299,14 +307,17 @@ pub fn check_expression_types(
                         check_expression_types(
                             argument,
                             environment,
-                            Some(*parameter_type),
+                            Some(parameter_type.clone()),
                             func_table,
                         )
                         .and_then(|argument_type| {
-                            if argument_type == *parameter_type {
+                            if argument_type == parameter_type.clone() {
                                 Ok(())
                             } else {
-                                Err(AnalysisError::TypeMismatch(*parameter_type, argument_type))
+                                Err(AnalysisError::TypeMismatch(
+                                    parameter_type.clone(),
+                                    argument_type,
+                                ))
                             }
                         })
                     });
@@ -314,6 +325,7 @@ pub fn check_expression_types(
                 match result {
                     Ok(())
                         if expected_type
+                            .clone()
                             .is_none_or(|expected| expected == function.signature.return_type) =>
                     {
                         selected = Some(function.id.clone());
@@ -321,8 +333,8 @@ pub fn check_expression_types(
                     }
                     Ok(()) => {
                         first_error = Some(AnalysisError::TypeMismatch(
-                            expected_type.expect("guarded by is_none_or"),
-                            function.signature.return_type,
+                            expected_type.clone().expect("guarded by is_none_or"),
+                            function.signature.return_type.clone(),
                         ));
                     }
                     Err(error) if first_error.is_none() => first_error = Some(error),
@@ -339,9 +351,14 @@ pub fn check_expression_types(
             for (parameter_type, argument) in
                 function.signature.parameters.iter().zip(&mut *arguments)
             {
-                check_expression_types(argument, environment, Some(*parameter_type), func_table)?;
+                check_expression_types(
+                    argument,
+                    environment,
+                    Some(parameter_type.clone()),
+                    func_table,
+                )?;
             }
-            let return_type = function.signature.return_type;
+            let return_type = function.signature.return_type.clone();
             let arguments = std::mem::take(arguments);
             *expression = Expression::ResolvedFunctionCall {
                 function_id,
@@ -360,7 +377,12 @@ pub fn check_block_types(
 ) -> Result<(), AnalysisError> {
     environment.push_scope_typed();
     for statement in block {
-        check_statement_types(statement, environment, expected_return_type, func_table)?;
+        check_statement_types(
+            statement,
+            environment,
+            expected_return_type.clone(),
+            func_table,
+        )?;
     }
     environment.pop_scope_typed();
     Ok(())
@@ -418,8 +440,12 @@ pub fn check_plus_types(
         | (Type::I64, Type::I64)
         | (Type::F32, Type::F32)
         | (Type::F64, Type::F64)
-        | (Type::String, Type::String) => Ok(*left),
-        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+        | (Type::String, Type::String) => Ok(left.clone()),
+        _ => Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        )),
     }
 }
 
@@ -438,8 +464,12 @@ pub fn check_number_only_bin_op_types(
         | (Type::I32, Type::I32)
         | (Type::I64, Type::I64)
         | (Type::F32, Type::F32)
-        | (Type::F64, Type::F64) => Ok(*left),
-        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+        | (Type::F64, Type::F64) => Ok(left.clone()),
+        _ => Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        )),
     }
 }
 
@@ -459,7 +489,11 @@ pub fn check_order_comparison_op_types(
         | (Type::I64, Type::I64)
         | (Type::F32, Type::F32)
         | (Type::F64, Type::F64) => Ok(Type::Bool),
-        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+        _ => Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        )),
     }
 }
 
@@ -481,7 +515,11 @@ pub fn check_equivalence_comparison_op_types(
         | (Type::F64, Type::F64)
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String) => Ok(Type::Bool),
-        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+        _ => Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        )),
     }
 }
 
@@ -492,7 +530,11 @@ pub fn check_logical_bin_op_types(
 ) -> Result<Type, AnalysisError> {
     match (left, right) {
         (Type::Bool, Type::Bool) => Ok(Type::Bool),
-        _ => Err(AnalysisError::BinOpTypeError(*operator, *left, *right)),
+        _ => Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        )),
     }
 }
 
@@ -502,9 +544,13 @@ pub fn check_walrus_types(
     right: &Type,
 ) -> Result<Type, AnalysisError> {
     if left != right {
-        return Err(AnalysisError::BinOpTypeError(*operator, *left, *right));
+        return Err(AnalysisError::BinOpTypeError(
+            *operator,
+            left.clone(),
+            right.clone(),
+        ));
     }
-    Ok(*left)
+    Ok(left.clone())
 }
 
 pub fn check_unary_operator_types(
@@ -550,8 +596,8 @@ pub fn check_number_only_un_op_types(
         | Type::I32
         | Type::I64
         | Type::F32
-        | Type::F64 => Ok(*operand),
-        _ => Err(AnalysisError::UnOpTypeError(*operator, *operand)),
+        | Type::F64 => Ok(operand.clone()),
+        _ => Err(AnalysisError::UnOpTypeError(*operator, operand.clone())),
     }
 }
 
@@ -560,8 +606,8 @@ pub fn check_bool_only_un_op_types(
     operand: &Type,
 ) -> Result<Type, AnalysisError> {
     match operand {
-        Type::Bool => Ok(*operand),
-        _ => Err(AnalysisError::UnOpTypeError(*operator, *operand)),
+        Type::Bool => Ok(operand.clone()),
+        _ => Err(AnalysisError::UnOpTypeError(*operator, operand.clone())),
     }
 }
 
@@ -591,42 +637,36 @@ fn resolve_integer_literal(
 ) -> Result<(Number, Type), AnalysisError> {
     let target_type = expected_type.unwrap_or(Type::I32);
 
-    let number = match target_type {
-        Type::I8 => Number::I8(
-            i8::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::I16 => Number::I16(
-            i16::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::I32 => Number::I32(
-            i32::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::I64 => Number::I64(value),
+    let number =
+        match target_type {
+            Type::I8 => Number::I8(i8::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::I16 => Number::I16(i16::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::I32 => Number::I32(i32::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::I64 => Number::I64(value),
 
-        Type::U8 => Number::U8(
-            u8::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::U16 => Number::U16(
-            u16::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::U32 => Number::U32(
-            u32::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
-        Type::U64 => Number::U64(
-            u64::try_from(value)
-                .map_err(|_| AnalysisError::IntegerLiteralOutOfRange(value, target_type))?,
-        ),
+            Type::U8 => Number::U8(u8::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::U16 => Number::U16(u16::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::U32 => Number::U32(u32::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
+            Type::U64 => Number::U64(u64::try_from(value).map_err(|_| {
+                AnalysisError::IntegerLiteralOutOfRange(value, target_type.clone())
+            })?),
 
-        _ => {
-            return Err(AnalysisError::TypeMismatch(target_type, Type::I32));
-        }
-    };
+            _ => {
+                return Err(AnalysisError::TypeMismatch(target_type, Type::I32));
+            }
+        };
     Ok((number, target_type))
 }
 

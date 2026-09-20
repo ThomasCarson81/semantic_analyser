@@ -26,8 +26,8 @@ pub fn collect_functions_and_globals(
                 };
                 let function_signature = FunctionSignature {
                     name: identifier.clone(),
-                    parameters: parameters.iter().map(|fp| fp.param_type).collect(),
-                    return_type: *return_type,
+                    parameters: parameters.iter().map(|fp| fp.param_type.clone()).collect(),
+                    return_type: return_type.clone(),
                 };
                 if func_table
                     .has_function_with_parameters(identifier, &function_signature.parameters)
