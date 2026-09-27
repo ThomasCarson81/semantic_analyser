@@ -192,7 +192,6 @@ pub fn resolve_type(
     generic_type_names: &Vec<String>,
 ) -> Result<Type, AnalysisError> {
     let mut resolved_type = ty.clone();
-    println!("Resolving type: {:?}", ty);
     match ty {
         Type::Named { name, arguments } => {
             if arguments.len() == 0 && Type::from_str(name).is_some() {
