@@ -5,7 +5,7 @@ use syntax::{
         Function, FunctionBody, FunctionId, FunctionImplementation, FunctionSignature,
         FunctionTable,
     },
-    types::Type,
+    types::{Type, TypeId, TypeTable},
 };
 
 pub fn collect_functions_and_globals(
@@ -59,6 +59,7 @@ pub fn collect_functions_and_globals(
                 }
                 global_table.push(statement.clone());
             }
+            Statement::TypeDefinition(_) => {}
             _ => return Err(AnalysisError::TopLevelStatement),
         }
     }
@@ -71,4 +72,103 @@ pub fn collect_functions_and_globals(
         return Err(AnalysisError::NoMainFunction);
     }
     Ok(())
+}
+
+pub fn collect_types(
+    program: &mut Program,
+    type_table: &mut TypeTable,
+) -> Result<(), AnalysisError> {
+    collect_primitive_types(type_table);
+    for statement in &mut program.statements {
+        if let Statement::TypeDefinition(type_def) = statement {
+            if type_table
+                .types
+                .iter()
+                .any(|existing_type| existing_type.name == type_def.name)
+            {
+                return Err(AnalysisError::TypeAlreadyDefined(type_def.name.clone()));
+            }
+            type_def.id = TypeId(type_table.types.len());
+            type_table.types.push(type_def.clone());
+        }
+    }
+    Ok(())
+}
+macro_rules! generate_type_definition {
+    ($name:expr, $type_name:expr, $id:expr) => {
+        syntax::types::TypeDefinition {
+            id: TypeId($id), // Placeholder, will be set later
+            name: $name.into(),
+            parameters: vec![],
+            kind: syntax::types::TypeDefinitionKind::BuiltIn($type_name),
+        }
+    };
+    () => {};
+}
+fn collect_primitive_types(type_table: &mut TypeTable) {
+    type_table.types.push(generate_type_definition!(
+        "u8",
+        Type::U8,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "u16",
+        Type::U16,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "u32",
+        Type::U32,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "u64",
+        Type::U64,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "i8",
+        Type::I8,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "i16",
+        Type::I16,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "i32",
+        Type::I32,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "i64",
+        Type::I64,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "f32",
+        Type::F32,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "f64",
+        Type::F64,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "bool",
+        Type::Bool,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "string",
+        Type::String,
+        type_table.types.len()
+    ));
+    type_table.types.push(generate_type_definition!(
+        "unit",
+        Type::Unit,
+        type_table.types.len()
+    ));
 }

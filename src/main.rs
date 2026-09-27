@@ -2,9 +2,7 @@ mod collection;
 mod context_checking;
 mod name_resolution;
 mod type_checking;
-use collection::collect_functions_and_globals;
-use context_checking::check_contexts;
-use name_resolution::resolve_names;
+mod type_resolution;
 use std::{
     collections::{HashMap, HashSet},
     env, fs,
@@ -12,15 +10,22 @@ use std::{
 use syntax::{
     ast::{Program, Statement},
     functions::{
-        CheckedProgram, Function, FunctionBody, FunctionImplementation,
-        FunctionImplementation::Oxide, FunctionSignature, FunctionTable,
+        CheckedProgram, Function, FunctionBody, FunctionImplementation, FunctionSignature,
+        FunctionTable,
     },
     semantics::Symbol,
     stdlib::builtin_functions,
     tokens::TokenType,
-    types::Type,
+    types::{Type, TypeTable},
 };
-use type_checking::check_types;
+
+use crate::{
+    collection::{collect_functions_and_globals, collect_types},
+    context_checking::check_contexts,
+    name_resolution::resolve_names,
+    type_checking::check_types,
+    type_resolution::resolve_types,
+};
 
 #[derive(Debug)]
 enum AnalysisError {
@@ -35,11 +40,13 @@ enum AnalysisError {
     UnOpTypeError(TokenType, Type),
     IntegerLiteralOutOfRange(i64, Type),
     CannotMutate(String),
+    TypeAlreadyDefined(String),
     TopLevelStatement,
     NoMainFunction,
     CouldNotReadFile(String),
     InvalidGlobalDeclaration(String),
     InvalidContext(String),
+    UndeclaredType(String),
 }
 
 struct SemanticEnvironment {
@@ -157,6 +164,24 @@ fn main() {
         }
     }
 
+    let mut type_table = TypeTable::new();
+    match collect_types(&mut program, &mut type_table) {
+        Ok(_) => {}
+        Err(e) => {
+            match e {
+                AnalysisError::TypeAlreadyDefined(name) => {
+                    println!(
+                        "Type '{name}' already defined. Overrides are not currently supported."
+                    );
+                }
+                _ => unreachable!(
+                    "Semantic Analyser encountered an unexpected error when collecting types."
+                ),
+            }
+            std::process::exit(1);
+        }
+    }
+
     match resolve_names(&mut program, &mut environment, &function_table) {
         Ok(_) => {}
         Err(e) => {
@@ -188,6 +213,21 @@ fn main() {
                 }
                 _ => unreachable!(
                     "Semantic Analyser encountered an unexpected error when resolving names."
+                ),
+            }
+            std::process::exit(1);
+        }
+    }
+
+    match resolve_types(&mut program, &mut type_table) {
+        Ok(_) => {}
+        Err(e) => {
+            match e {
+                AnalysisError::UndeclaredType(name) => {
+                    println!("Type '{name}' does not exist.");
+                }
+                _ => unreachable!(
+                    "Semantic Analyser encountered an unexpected error when resolving types."
                 ),
             }
             std::process::exit(1);
@@ -235,6 +275,8 @@ fn main() {
                 | AnalysisError::TopLevelStatement
                 | AnalysisError::NoMainFunction
                 | AnalysisError::CouldNotReadFile(_)
+                | AnalysisError::TypeAlreadyDefined(_)
+                | AnalysisError::UndeclaredType(_)
                 | AnalysisError::InvalidContext(_) => unreachable!(
                     "Semantic Analyser encountered an unexpected error when checking types."
                 ),
@@ -258,7 +300,7 @@ fn main() {
         }
     }
 
-    let checked_program = build_checked_program(&program, &function_table)
+    let checked_program = build_checked_program(&program, &function_table, &type_table)
         .expect("function collection must produce a complete checked program");
 
     if args.len() == 3 {
@@ -290,6 +332,7 @@ fn output_checked_program(program: &CheckedProgram, file_path: &str) {
 fn build_checked_program(
     program: &Program,
     collected_functions: &FunctionTable,
+    collected_types: &TypeTable,
 ) -> Result<CheckedProgram, AnalysisError> {
     let globals = program
         .statements
@@ -337,7 +380,7 @@ fn build_checked_program(
                 id: collected_function.id.clone(),
                 signature,
                 parameters: parameters.clone(),
-                implementation: Oxide(FunctionBody {
+                implementation: FunctionImplementation::Oxide(FunctionBody {
                     statements: body.clone(),
                 }),
             })
@@ -361,6 +404,7 @@ fn build_checked_program(
 
     Ok(CheckedProgram {
         function_table,
+        type_table: collected_types.clone(),
         globals,
         main_function_id,
     })

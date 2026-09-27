@@ -127,6 +127,7 @@ pub fn check_statement_types(
             }
         }
         Statement::Break | Statement::Continue | Statement::Pass => {}
+        Statement::TypeDefinition(_) => {}
     }
 
     Ok(())

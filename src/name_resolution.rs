@@ -115,6 +115,7 @@ pub fn resolve_statement(
             }
         }
         Statement::Break | Statement::Continue | Statement::Pass => (),
+        Statement::TypeDefinition(_) => {}
     }
     Ok(())
 }
