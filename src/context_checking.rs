@@ -105,6 +105,11 @@ fn check_statement_context(
             // return value doesn't matter
             return Ok(ControlFlow::Return(syntax::types::Value::Unit));
         }
+        Statement::TypeDefinition(_) => {
+            return Err(AnalysisError::InvalidContext(
+                "Type definitions are not allowed inside functions.".to_string(),
+            ));
+        }
         _ => {}
     }
     Ok(ControlFlow::Normal)
