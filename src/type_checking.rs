@@ -1,6 +1,6 @@
 use syntax::{
-    ast::{Expression, Program, Statement},
-    functions::FunctionTable,
+    ast::{Expression, Statement},
+    functions::{FunctionImplementation, FunctionTable},
     semantics::Symbol,
     tokens::TokenType,
     types::{Number, Type, Value},
@@ -9,19 +9,34 @@ use syntax::{
 use crate::{AnalysisError, SemanticEnvironment};
 
 pub fn check_types(
-    program: &mut Program,
+    global_table: &mut Vec<Statement>,
+    func_table: &mut FunctionTable,
     environment: &mut SemanticEnvironment,
-    func_table: &FunctionTable,
 ) -> Result<(), AnalysisError> {
-    for statement in &mut program.statements {
-        if matches!(statement, Statement::Let { .. }) {
-            check_statement_types(statement, environment, None, func_table)?;
-        }
+    for statement in global_table {
+        check_statement_types(statement, environment, None, func_table)?;
     }
-    // globals must be type checked before functions so they're available inside the functions
-    for statement in &mut program.statements {
-        if matches!(statement, Statement::FunctionDefinition { .. }) {
-            check_statement_types(statement, environment, None, func_table)?;
+    let func_table_clone = func_table.clone();
+    for func in &mut func_table.functions {
+        match &mut func.implementation {
+            FunctionImplementation::Oxide(function_body) => {
+                environment.push_scope_typed();
+                for parameter in func.parameters.iter() {
+                    let parameter_symbol = Symbol {
+                        mutable: false,
+                        var_type: parameter.param_type.clone(),
+                    };
+                    environment.define_typed(parameter.name.clone(), parameter_symbol)?;
+                }
+                check_block_types(
+                    &mut function_body.statements,
+                    environment,
+                    Some(func.signature.return_type.clone()),
+                    &func_table_clone,
+                )?;
+                environment.pop_scope_typed();
+            }
+            FunctionImplementation::Builtin(_) => {}
         }
     }
     Ok(())

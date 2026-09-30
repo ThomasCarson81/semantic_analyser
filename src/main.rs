@@ -10,8 +10,7 @@ use std::{
 use syntax::{
     ast::{Program, Statement},
     functions::{
-        CheckedProgram, Function, FunctionBody, FunctionImplementation, FunctionSignature,
-        FunctionTable,
+        CheckedProgram, Function, FunctionImplementation, FunctionSignature, FunctionTable,
     },
     semantics::Symbol,
     stdlib::builtin_functions,
@@ -219,7 +218,7 @@ fn main() {
         }
     }
 
-    match resolve_types(&mut program, &mut type_table) {
+    match resolve_types(&mut function_table, &mut global_table, &mut type_table) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -238,7 +237,7 @@ fn main() {
     environment.scopes.clear();
     environment.push_scope();
 
-    match check_types(&mut program, &mut environment, &function_table) {
+    match check_types(&mut global_table, &mut function_table, &mut environment) {
         Ok(_) => {}
         Err(e) => {
             match e {
@@ -300,7 +299,7 @@ fn main() {
         }
     }
 
-    let checked_program = build_checked_program(&program, &function_table, &type_table)
+    let checked_program = build_checked_program(&global_table, &function_table, &type_table)
         .expect("function collection must produce a complete checked program");
 
     if args.len() == 3 {
@@ -330,62 +329,22 @@ fn output_checked_program(program: &CheckedProgram, file_path: &str) {
 }
 
 fn build_checked_program(
-    program: &Program,
+    global_table: &Vec<Statement>,
     collected_functions: &FunctionTable,
     collected_types: &TypeTable,
 ) -> Result<CheckedProgram, AnalysisError> {
-    let globals = program
-        .statements
-        .iter()
-        .filter_map(|statement| match statement {
-            Statement::Let { .. } => Some(statement.clone()),
-            _ => None,
-        })
-        .collect();
-
     let mut functions: Vec<Function> = collected_functions
         .functions
         .iter()
         .filter(|function| matches!(&function.implementation, FunctionImplementation::Builtin(_)))
         .cloned()
         .collect();
-    let oxide_functions = program
-        .statements
+    let oxide_functions: Vec<Function> = collected_functions
+        .functions
         .iter()
-        .filter_map(|statement| match statement {
-            Statement::FunctionDefinition {
-                identifier,
-                parameters,
-                body,
-                return_type,
-            } => Some((identifier, parameters, body, return_type)),
-            _ => None,
-        })
-        .map(|(identifier, parameters, body, return_type)| {
-            let signature = FunctionSignature {
-                name: identifier.clone(),
-                parameters: parameters
-                    .iter()
-                    .map(|parameter| parameter.param_type.clone())
-                    .collect(),
-                return_type: return_type.clone(),
-            };
-            let collected_function = collected_functions
-                .functions
-                .iter()
-                .find(|function| function.signature == signature)
-                .ok_or_else(|| AnalysisError::FunctionNotDefined(identifier.clone()))?;
-
-            Ok(Function {
-                id: collected_function.id.clone(),
-                signature,
-                parameters: parameters.clone(),
-                implementation: FunctionImplementation::Oxide(FunctionBody {
-                    statements: body.clone(),
-                }),
-            })
-        })
-        .collect::<Result<Vec<_>, AnalysisError>>()?;
+        .filter(|function| matches!(&function.implementation, FunctionImplementation::Oxide(_)))
+        .cloned()
+        .collect();
     functions.extend(oxide_functions);
     let function_table = FunctionTable { functions };
     let main_function_id = function_table
@@ -405,7 +364,7 @@ fn build_checked_program(
     Ok(CheckedProgram {
         function_table,
         type_table: collected_types.clone(),
-        globals,
+        globals: global_table.clone(),
         main_function_id,
     })
 }

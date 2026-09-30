@@ -1,28 +1,36 @@
 use crate::AnalysisError;
 use syntax::{
-    ast::{Expression, Program, Statement},
+    ast::{Expression, Statement},
+    functions::{FunctionImplementation, FunctionTable},
     types::{EnumVariantFields, Type, TypeDefinitionKind, TypeTable},
 };
 
 pub fn resolve_types(
-    program: &mut Program,
+    function_table: &mut FunctionTable,
+    global_table: &mut Vec<Statement>,
     type_table: &mut TypeTable,
 ) -> Result<(), AnalysisError> {
-    for statement in &mut program.statements {
+    for statement in global_table {
         type_resolve_statement(statement, type_table)?;
     }
 
-    // TypeTable contains clones created during collection, so keep those
-    // definitions in sync with the resolved definitions in the program.
-    for statement in &program.statements {
-        if let Statement::TypeDefinition(type_definition) = statement {
-            if let Some(collected_definition) = type_table
-                .types
-                .iter_mut()
-                .find(|definition| definition.id == type_definition.id)
-            {
-                *collected_definition = type_definition.clone();
+    for func in &mut function_table.functions {
+        match &mut func.implementation {
+            FunctionImplementation::Oxide(function_body) => {
+                for (parameter, parameter_type) in func
+                    .parameters
+                    .iter_mut()
+                    .zip(&mut func.signature.parameters)
+                {
+                    parameter.param_type =
+                        resolve_type(&mut parameter.param_type, type_table, &Vec::new())?;
+                    *parameter_type = parameter.param_type.clone();
+                }
+                func.signature.return_type =
+                    resolve_type(&mut func.signature.return_type, type_table, &Vec::new())?;
+                type_resolve_block(&mut function_body.statements, type_table)?;
             }
+            FunctionImplementation::Builtin(_) => {}
         }
     }
 
@@ -196,6 +204,7 @@ pub fn resolve_type(
         Type::Named { name, arguments } => {
             if arguments.len() == 0 && Type::from_str(name).is_some() {
                 resolved_type = Type::from_str(name).unwrap();
+                *ty = resolved_type.clone();
                 return Ok(resolved_type);
             }
 
